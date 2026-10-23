@@ -14,15 +14,15 @@ export const ConnectPage: React.FC<ConnectPageProps> = ({
 }) => {
   const { login, loginWithToken, isLoading, error } = useAuth();
   const [authMode, setAuthMode] = useState<'credentials' | 'token'>('credentials');
+  const isHostedOnCloud = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location.hostname);
   const [serverUrl, setServerUrl] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [apiToken, setApiToken] = useState('');
-  const [useProxy, setUseProxy] = useState(false);
+  const [useProxy, setUseProxy] = useState(isHostedOnCloud);
   const [localError, setLocalError] = useState<string | null>(null);
 
   const isPrivateServer = isPrivateNetworkAddress(serverUrl);
-  const isHostedOnCloud = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location.hostname);
   const isInsecure = serverUrl.trim().startsWith('http://') && !isPrivateServer;
 
   const handleSubmit = async (e: React.FormEvent) => {

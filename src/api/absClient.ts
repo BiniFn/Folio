@@ -15,15 +15,23 @@ export interface AbsRequestOptions {
 }
 
 class AbsClient {
-  private formatUrl(serverUrl: string, endpoint: string, useProxy: boolean = false): string {
+  private formatUrl(serverUrl: string, endpoint: string, token?: string, useProxy: boolean = false): string {
     const cleanBase = normalizeUrl(serverUrl);
-    const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    let cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
 
     if (useProxy) {
       const proxyUrl = new URL('/api/proxy', window.location.origin);
       proxyUrl.searchParams.set('target', cleanBase);
       proxyUrl.searchParams.set('path', cleanEndpoint);
+      if (token) {
+        proxyUrl.searchParams.set('token', token);
+      }
       return proxyUrl.toString();
+    }
+
+    if (token && !cleanEndpoint.includes('token=')) {
+      const sep = cleanEndpoint.includes('?') ? '&' : '?';
+      cleanEndpoint = `${cleanEndpoint}${sep}token=${encodeURIComponent(token)}`;
     }
 
     return `${cleanBase}${cleanEndpoint}`;
@@ -45,14 +53,14 @@ class AbsClient {
     };
 
     if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
+      headers['Authorization'] = `Bearer ${token.trim()}`;
     }
 
     if (useProxy) {
       headers['x-abs-target'] = normalizeUrl(serverUrl);
     }
 
-    const primaryUrl = this.formatUrl(serverUrl, endpoint, useProxy);
+    const primaryUrl = this.formatUrl(serverUrl, endpoint, token, useProxy);
 
     try {
       const response = await fetch(primaryUrl, {
@@ -141,11 +149,57 @@ class AbsClient {
   }
 
   /**
-   * Verify session token
+   * Verify session token or API key
    */
   async verifySession(serverUrl: string, token: string, useProxy: boolean = false): Promise<User> {
-    const data = await this.request<{ user: User }>('/api/authorize', { serverUrl, token, useProxy });
-    return data.user;
+    const cleanToken = token.trim();
+
+    // 1. Try /api/me (Standard endpoint for Bearer token & API key)
+    try {
+      const data = await this.request<any>('/api/me', { serverUrl, token: cleanToken, useProxy });
+      const userObj = data?.user || data;
+      if (userObj && (userObj.id || userObj.username)) {
+        return {
+          id: userObj.id || 'user',
+          username: userObj.username || 'User',
+          type: userObj.type || 'user',
+          token: userObj.token || cleanToken,
+          mediaProgress: userObj.mediaProgress || [],
+        };
+      }
+    } catch (err: any) {
+      console.warn('/api/me verification failed, trying fallback...', err);
+    }
+
+    // 2. Try /api/authorize (Session token fallback)
+    try {
+      const authData = await this.request<any>('/api/authorize', { serverUrl, token: cleanToken, useProxy });
+      const userObj = authData?.user || authData;
+      if (userObj && (userObj.id || userObj.username)) {
+        return {
+          id: userObj.id || 'user',
+          username: userObj.username || 'User',
+          type: userObj.type || 'user',
+          token: userObj.token || cleanToken,
+          mediaProgress: userObj.mediaProgress || [],
+        };
+      }
+    } catch (err: any) {
+      console.warn('/api/authorize verification failed, trying library fallback...', err);
+    }
+
+    // 3. Ultimate Fallback: Test library access directly with the token
+    const libs = await this.getLibraries(serverUrl, cleanToken, useProxy);
+    if (Array.isArray(libs) && libs.length >= 0) {
+      return {
+        id: 'api-user',
+        username: 'API User',
+        type: 'api',
+        token: cleanToken,
+      };
+    }
+
+    throw new Error('Invalid API token or unauthorized session. Please verify your token.');
   }
 
   /**
