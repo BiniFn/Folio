@@ -4,13 +4,9 @@ import {
   ChevronRight, 
   Maximize2, 
   Minimize2, 
-  RotateCcw, 
   ZoomIn, 
   ZoomOut,
-  Maximize,
-  ArrowLeftRight,
-  Sliders,
-  Check
+  ArrowLeftRight
 } from 'lucide-react';
 
 interface PdfPageReaderProps {
@@ -35,6 +31,12 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderTaskRef = useRef<any>(null);
+  const panStartRef = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number }>({
+    x: 0,
+    y: 0,
+    scrollLeft: 0,
+    scrollTop: 0,
+  });
 
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [currentPage, setCurrentPage] = useState<number>(initialPage);
@@ -43,9 +45,18 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
   const [isRendering, setIsRendering] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [fitMode, setFitMode] = useState<'height' | 'width' | 'auto'>('height');
+  const [zoom, setZoom] = useState<number>(1.0);
+  const [isPanning, setIsPanning] = useState<boolean>(false);
   const [readingDirection, setReadingDirection] = useState<'ltr' | 'rtl'>('ltr');
   const [showControls, setShowControls] = useState<boolean>(true);
-  const [pageInputValue, setPageInputValue] = useState<string>(String(initialPage));
+
+  // Synchronize when parent updates page (e.g. typing chapter or page jump)
+  useEffect(() => {
+    if (initialPage && initialPage !== currentPage && totalPages > 1) {
+      const clamped = Math.min(totalPages, Math.max(1, initialPage));
+      setCurrentPage(clamped);
+    }
+  }, [initialPage, totalPages]);
 
   // Initialize PDF.js and Load Document
   useEffect(() => {
@@ -110,7 +121,6 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
 
         const validInitial = Math.min(count, Math.max(1, initialPage));
         setCurrentPage(validInitial);
-        setPageInputValue(String(validInitial));
         onPageChange?.(validInitial, count);
         setIsLoading(false);
       } catch (err: any) {
@@ -155,15 +165,16 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
       const scaleX = availWidth / unscaledViewport.width;
       const scaleY = availHeight / unscaledViewport.height;
 
-      let targetScale = 1;
+      let baseScale = 1;
       if (fitMode === 'height') {
-        targetScale = scaleY;
+        baseScale = scaleY;
       } else if (fitMode === 'width') {
-        targetScale = scaleX;
+        baseScale = scaleX;
       } else {
-        targetScale = Math.min(scaleX, scaleY);
+        baseScale = Math.min(scaleX, scaleY);
       }
 
+      const targetScale = baseScale * zoom;
       const dpr = window.devicePixelRatio || 1;
       const viewport = page.getViewport({ scale: targetScale });
 
@@ -204,9 +215,9 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
       }
       setIsRendering(false);
     }
-  }, [pdfDoc, currentPage, fitMode, showControls, totalPages]);
+  }, [pdfDoc, currentPage, fitMode, zoom, showControls, totalPages]);
 
-  // Re-render when page, fitMode, or controls change
+  // Re-render when page, fitMode, zoom, or controls change
   useEffect(() => {
     renderCurrentPage();
   }, [renderCurrentPage]);
@@ -221,12 +232,11 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
     return () => window.removeEventListener('resize', handleResize);
   }, [renderCurrentPage]);
 
-  // Page Navigation
+  // Page Navigation (Only triggered by buttons/slider/keys, never by canvas clicks)
   const goToPage = (pageNum: number) => {
     const clamped = Math.min(totalPages, Math.max(1, pageNum));
     if (clamped !== currentPage) {
       setCurrentPage(clamped);
-      setPageInputValue(String(clamped));
       onPageChange?.(clamped, totalPages);
     }
   };
@@ -247,7 +257,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
     }
   };
 
-  // Keyboard Shortcuts
+  // Keyboard Shortcuts (Arrow keys & space for page navigation, + / - for zoom)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -264,6 +274,15 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
       } else if (e.key === 'End') {
         e.preventDefault();
         goToPage(totalPages);
+      } else if (e.key === '+' || e.key === '=') {
+        e.preventDefault();
+        setZoom(prev => Math.min(3.0, Number((prev + 0.15).toFixed(2))));
+      } else if (e.key === '-' || e.key === '_') {
+        e.preventDefault();
+        setZoom(prev => Math.max(0.5, Number((prev - 0.15).toFixed(2))));
+      } else if (e.key === '0') {
+        e.preventDefault();
+        setZoom(1.0);
       }
     };
 
@@ -271,57 +290,57 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentPage, totalPages, readingDirection]);
 
-  // Handle Click Zones (Left / Center / Right)
-  const handleCanvasContainerClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const width = rect.width;
-
-    const leftZone = width * 0.28;
-    const rightZone = width * 0.72;
-
-    if (clickX < leftZone) {
-      // Left Zone -> Prev (in LTR) or Next (in RTL)
-      handlePrevPage();
-    } else if (clickX > rightZone) {
-      // Right Zone -> Next (in LTR) or Prev (in RTL)
-      handleNextPage();
-    } else {
-      // Center Zone -> Toggle top & bottom overlay controls
-      setShowControls(!showControls);
-    }
-  };
-
-  // Wheel listener: flip page on vertical wheel tick
+  // Wheel listener: Pinch-to-zoom / Ctrl+wheel to zoom; does NOT switch pages!
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    let wheelTimeout: any = null;
-    let accumulatedDelta = 0;
-
     const handleWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      accumulatedDelta += e.deltaY;
-
-      if (wheelTimeout) clearTimeout(wheelTimeout);
-      wheelTimeout = setTimeout(() => {
-        if (accumulatedDelta > 40) {
-          handleNextPage();
-        } else if (accumulatedDelta < -40) {
-          handlePrevPage();
-        }
-        accumulatedDelta = 0;
-      }, 50);
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -0.12 : 0.12;
+        setZoom(prev => Math.min(3.0, Math.max(0.5, Number((prev + delta).toFixed(2)))));
+      }
+      // Note: Normal vertical/horizontal wheel scrolls when zoomed in, and does NOT switch pages!
     };
 
     container.addEventListener('wheel', handleWheel, { passive: false });
     return () => {
       container.removeEventListener('wheel', handleWheel);
-      if (wheelTimeout) clearTimeout(wheelTimeout);
     };
-  }, [currentPage, totalPages, readingDirection]);
+  }, []);
+
+  // Panning when zoomed in
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (zoom > 1.01 && containerRef.current) {
+      setIsPanning(true);
+      panStartRef.current = {
+        x: e.clientX,
+        y: e.clientY,
+        scrollLeft: containerRef.current.scrollLeft,
+        scrollTop: containerRef.current.scrollTop,
+      };
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (isPanning && containerRef.current) {
+      const dx = e.clientX - panStartRef.current.x;
+      const dy = e.clientY - panStartRef.current.y;
+      containerRef.current.scrollLeft = panStartRef.current.scrollLeft - dx;
+      containerRef.current.scrollTop = panStartRef.current.scrollTop - dy;
+    }
+  };
+
+  const handleMouseUp = () => {
+    setIsPanning(false);
+  };
+
+  // Canvas click toggles controls, NEVER turns pages
+  const handleCanvasContainerClick = (e: React.MouseEvent) => {
+    if (isPanning) return;
+    setShowControls(prev => !prev);
+  };
 
   if (error) {
     return (
@@ -336,7 +355,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
     <div className="relative w-full h-full flex-1 flex flex-col bg-[#0b0e11] select-none overflow-hidden">
       {/* Top MangaDex Header Overlay */}
       {showControls && (
-        <div className="absolute top-0 inset-x-0 z-30 flex items-center justify-between px-6 py-3 bg-[#0e1216]/90 backdrop-blur-md border-b border-white/5 animate-fade-in text-xs text-stone-300">
+        <div className="absolute top-0 inset-x-0 z-30 flex items-center justify-between px-6 py-3 bg-[#0e1216]/95 backdrop-blur-md border-b border-white/5 animate-fade-in text-xs text-stone-300">
           <div className="flex items-center gap-3 min-w-0">
             <span className="font-medium text-neutral-100 truncate max-w-sm md:max-w-md">
               {title || 'Document'}
@@ -347,21 +366,52 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Zoom Controls */}
+            <div className="flex items-center gap-1 bg-neutral-900/90 rounded-lg p-0.5 border border-neutral-800 text-[11px]">
+              <button
+                onClick={() => setZoom(prev => Math.max(0.5, Number((prev - 0.15).toFixed(2))))}
+                className="p-1 hover:text-white text-stone-400 hover:bg-neutral-800 rounded transition-colors"
+                title="Zoom out (-)"
+              >
+                <ZoomOut className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => setZoom(1.0)}
+                className="px-2 py-0.5 font-mono text-[11px] text-teal-400 hover:text-teal-300 transition-colors"
+                title="Reset zoom to 100% (0)"
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+              <button
+                onClick={() => setZoom(prev => Math.min(3.0, Number((prev + 0.15).toFixed(2))))}
+                className="p-1 hover:text-white text-stone-400 hover:bg-neutral-800 rounded transition-colors"
+                title="Zoom in (+)"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
             {/* Fit mode selector */}
             <div className="flex bg-neutral-900/90 rounded-lg p-0.5 border border-neutral-800 text-[11px]">
               <button
-                onClick={() => setFitMode('height')}
+                onClick={() => {
+                  setFitMode('height');
+                  setZoom(1.0);
+                }}
                 className={`px-2.5 py-1 rounded transition-colors ${
-                  fitMode === 'height' ? 'bg-teal-500 text-black font-semibold' : 'text-stone-400 hover:text-white'
+                  fitMode === 'height' && zoom === 1.0 ? 'bg-teal-500 text-black font-semibold' : 'text-stone-400 hover:text-white'
                 }`}
-                title="Fit to page height (Manga style)"
+                title="Fit to page height"
               >
                 Fit Height
               </button>
               <button
-                onClick={() => setFitMode('width')}
+                onClick={() => {
+                  setFitMode('width');
+                  setZoom(1.0);
+                }}
                 className={`px-2.5 py-1 rounded transition-colors ${
-                  fitMode === 'width' ? 'bg-teal-500 text-black font-semibold' : 'text-stone-400 hover:text-white'
+                  fitMode === 'width' && zoom === 1.0 ? 'bg-teal-500 text-black font-semibold' : 'text-stone-400 hover:text-white'
                 }`}
                 title="Fit to page width"
               >
@@ -393,11 +443,17 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
         </div>
       )}
 
-      {/* Main Canvas Viewport with Left/Right Click Zones */}
+      {/* Main Canvas Viewport (Scrollable/Pannable when zoomed) */}
       <div
         ref={containerRef}
         onClick={handleCanvasContainerClick}
-        className="relative flex-1 w-full h-full flex items-center justify-center overflow-hidden cursor-pointer"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+        className={`relative flex-1 w-full h-full flex items-center justify-center overflow-auto ${
+          zoom > 1.01 ? (isPanning ? 'cursor-grabbing' : 'cursor-grab') : 'cursor-default'
+        }`}
       >
         {isLoading ? (
           <div className="flex flex-col items-center justify-center gap-3 text-stone-400 animate-pulse">
@@ -407,23 +463,39 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
         ) : (
           <canvas
             ref={canvasRef}
-            className="shadow-2xl transition-opacity duration-150 rounded"
+            className="shadow-2xl transition-opacity duration-150 rounded my-auto mx-auto shrink-0"
             style={{ opacity: isRendering ? 0.8 : 1 }}
           />
         )}
 
-        {/* Left Hover Zone & Arrow */}
-        <div className="absolute inset-y-0 left-0 w-24 flex items-center justify-start pl-4 opacity-0 hover:opacity-100 transition-opacity pointer-events-none group">
-          <div className="p-3 rounded-full bg-black/60 backdrop-blur-md border border-white/10 text-stone-200 shadow-2xl group-hover:scale-110 transition-transform">
+        {/* Left Explicit Arrow Button */}
+        <div className="absolute inset-y-0 left-0 w-20 flex items-center justify-start pl-3 pointer-events-none z-20">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handlePrevPage();
+            }}
+            disabled={currentPage <= 1}
+            className="pointer-events-auto p-3 rounded-full bg-black/75 hover:bg-black/95 backdrop-blur-md border border-white/10 text-stone-200 hover:text-teal-400 shadow-2xl hover:scale-110 transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none"
+            title="Previous page"
+          >
             <ChevronLeft className="w-6 h-6" />
-          </div>
+          </button>
         </div>
 
-        {/* Right Hover Zone & Arrow */}
-        <div className="absolute inset-y-0 right-0 w-24 flex items-center justify-end pr-4 opacity-0 hover:opacity-100 transition-opacity pointer-events-none group">
-          <div className="p-3 rounded-full bg-black/60 backdrop-blur-md border border-white/10 text-stone-200 shadow-2xl group-hover:scale-110 transition-transform">
+        {/* Right Explicit Arrow Button */}
+        <div className="absolute inset-y-0 right-0 w-20 flex items-center justify-end pr-3 pointer-events-none z-20">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleNextPage();
+            }}
+            disabled={currentPage >= totalPages}
+            className="pointer-events-auto p-3 rounded-full bg-black/75 hover:bg-black/95 backdrop-blur-md border border-white/10 text-stone-200 hover:text-teal-400 shadow-2xl hover:scale-110 transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none"
+            title="Next page"
+          >
             <ChevronRight className="w-6 h-6" />
-          </div>
+          </button>
         </div>
       </div>
 

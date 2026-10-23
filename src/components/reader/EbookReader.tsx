@@ -7,12 +7,14 @@ import {
   ChevronRight, 
   Settings2, 
   List, 
+  BookMarked,
+  Search,
   Maximize2, 
   Minimize2, 
-  PanelRightClose,
+  PanelRightClose, 
   PanelRightOpen,
-  ZoomIn, 
-  ZoomOut,
+  Volume2,
+  VolumeX,
   BookOpen,
   Headphones,
   FolderOpen,
@@ -20,7 +22,8 @@ import {
   Pause,
   RotateCcw,
   RotateCw,
-  X
+  X,
+  Check
 } from 'lucide-react';
 import { useReader } from '../../stores/readerStore';
 import { authStore } from '../../stores/authStore';
@@ -70,15 +73,18 @@ export const EbookReader: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [parsedEpub, setParsedEpub] = useState<ParsedEpub | null>(null);
   const [activeChapterIndex, setActiveChapterIndex] = useState(0);
-  const [pdfZoom, setPdfZoom] = useState(100);
   const [activePdfUrl, setActivePdfUrl] = useState<string | null>(null);
   const [pdfBuffer, setPdfBuffer] = useState<ArrayBuffer | null>(localBuffer);
-  const [showAudioCompanion, setShowAudioCompanion] = useState(true);
+  const [showAudioFlyout, setShowAudioFlyout] = useState(false);
+  const [showChapterFlyout, setShowChapterFlyout] = useState(false);
+  const [jumpQuery, setJumpQuery] = useState('');
+  const [jumpFeedback, setJumpFeedback] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [coverSrc, setCoverSrc] = useState<string>('');
 
   const contentRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const jumpInputRef = useRef<HTMLInputElement>(null);
 
   const isPdf = !!(
     ebookFile?.ext?.toLowerCase() === '.pdf' || 
@@ -211,6 +217,12 @@ export const EbookReader: React.FC = () => {
         toggleFullscreen();
       } else if (e.key === 's' || e.key === 'S') {
         toggleSidebar();
+      } else if (e.key === 'c' || e.key === 'C') {
+        setShowChapterFlyout(prev => !prev);
+        setShowAudioFlyout(false);
+      } else if (e.key === 'a' || e.key === 'A') {
+        setShowAudioFlyout(prev => !prev);
+        setShowChapterFlyout(false);
       }
     };
 
@@ -244,6 +256,111 @@ export const EbookReader: React.FC = () => {
     }
   };
 
+  // Quick Jump Form Handler (Type Chapter # or Page #)
+  const handleQuickJump = (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = jumpQuery.trim();
+    if (!q) return;
+
+    // 1. Pure number: e.g. "118" or "6"
+    const pureNum = parseInt(q, 10);
+    if (!isNaN(pureNum)) {
+      if (isPdf) {
+        // If within page range, jump to page
+        const clamped = Math.min(totalPages, Math.max(1, pureNum));
+        updateLocation(String(clamped), clamped / totalPages, clamped, totalPages, `Page ${clamped}`);
+        setJumpFeedback(`Jumped to Page ${clamped}`);
+        setTimeout(() => setJumpFeedback(null), 2500);
+        return;
+      } else if (parsedEpub) {
+        // Jump to chapter index (1-based input)
+        const chapIdx = pureNum - 1;
+        if (chapIdx >= 0 && chapIdx < parsedEpub.chapters.length) {
+          setActiveChapterIndex(chapIdx);
+          const newProg = (chapIdx + 1) / parsedEpub.chapters.length;
+          const curP = Math.max(1, Math.round(newProg * totalPages));
+          updateLocation(`chap_${chapIdx}`, newProg, curP, totalPages, parsedEpub.chapters[chapIdx].title);
+          setJumpFeedback(`Jumped to Chapter ${pureNum}`);
+          setTimeout(() => setJumpFeedback(null), 2500);
+          return;
+        }
+      }
+    }
+
+    // 2. "Chapter X" or "Chap X"
+    const chapMatch = q.match(/(?:chap(?:ter)?\.?\s*|c\s*)(\d+)/i);
+    if (chapMatch) {
+      const chapNum = parseInt(chapMatch[1], 10);
+      if (parsedEpub) {
+        const idx = chapNum - 1;
+        if (idx >= 0 && idx < parsedEpub.chapters.length) {
+          setActiveChapterIndex(idx);
+          const newProg = (idx + 1) / parsedEpub.chapters.length;
+          const curP = Math.max(1, Math.round(newProg * totalPages));
+          updateLocation(`chap_${idx}`, newProg, curP, totalPages, parsedEpub.chapters[idx].title);
+          setJumpFeedback(`Jumped to Chapter ${chapNum}`);
+          setTimeout(() => setJumpFeedback(null), 2500);
+          return;
+        }
+      } else if (isPdf) {
+        const found = tableOfContents.find(t => 
+          t.title.toLowerCase().includes(`chapter ${chapNum}`) || 
+          t.title.toLowerCase().includes(`chap ${chapNum}`)
+        );
+        if (found?.page) {
+          updateLocation(String(found.page), found.page / totalPages, found.page, totalPages, found.title);
+          setJumpFeedback(`Jumped to ${found.title}`);
+          setTimeout(() => setJumpFeedback(null), 2500);
+          return;
+        }
+        // Approximate page jump for PDF
+        const estPage = Math.min(totalPages, Math.max(1, Math.round((chapNum - 1) * 22) + 1));
+        updateLocation(String(estPage), estPage / totalPages, estPage, totalPages, `Chapter ${chapNum}`);
+        setJumpFeedback(`Jumped to Chapter ${chapNum}`);
+        setTimeout(() => setJumpFeedback(null), 2500);
+        return;
+      }
+    }
+
+    // 3. "Page X"
+    const pageMatch = q.match(/(?:page|p\.?)\s*(\d+)/i);
+    if (pageMatch) {
+      const pageNum = parseInt(pageMatch[1], 10);
+      const clamped = Math.min(totalPages, Math.max(1, pageNum));
+      updateLocation(String(clamped), clamped / totalPages, clamped, totalPages, `Page ${clamped}`);
+      setJumpFeedback(`Jumped to Page ${clamped}`);
+      setTimeout(() => setJumpFeedback(null), 2500);
+      return;
+    }
+
+    // 4. Chapter title search: e.g. "on the road", "prologue"
+    const lowerQ = q.toLowerCase();
+    if (parsedEpub) {
+      const foundIdx = parsedEpub.chapters.findIndex(c => c.title.toLowerCase().includes(lowerQ));
+      if (foundIdx !== -1) {
+        setActiveChapterIndex(foundIdx);
+        const newProg = (foundIdx + 1) / parsedEpub.chapters.length;
+        const curP = Math.max(1, Math.round(newProg * totalPages));
+        updateLocation(`chap_${foundIdx}`, newProg, curP, totalPages, parsedEpub.chapters[foundIdx].title);
+        setJumpFeedback(`Jumped to ${parsedEpub.chapters[foundIdx].title}`);
+        setTimeout(() => setJumpFeedback(null), 2500);
+        return;
+      }
+    }
+    if (tableOfContents.length > 0) {
+      const foundToc = tableOfContents.find(t => t.title.toLowerCase().includes(lowerQ));
+      if (foundToc?.page) {
+        updateLocation(String(foundToc.page), foundToc.page / totalPages, foundToc.page, totalPages, foundToc.title);
+        setJumpFeedback(`Jumped to ${foundToc.title}`);
+        setTimeout(() => setJumpFeedback(null), 2500);
+        return;
+      }
+    }
+
+    setJumpFeedback('No matching chapter or page found');
+    setTimeout(() => setJumpFeedback(null), 2500);
+  };
+
   if (!isOpen || !item) return null;
 
   const auth = authStore.getState();
@@ -253,7 +370,6 @@ export const EbookReader: React.FC = () => {
     ? ((player.item as any)?.media?.coverPath || (auth.token && auth.serverUrl && !player.item.id.startsWith('local_') ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, player.item.id, 600, auth.useProxy) : ''))
     : '';
 
-  // Check if this book or any book has audio
   const hasAudioCompanion = !!(
     item.media?.duration || 
     item.media?.numTracks || 
@@ -261,24 +377,6 @@ export const EbookReader: React.FC = () => {
     item.media?.audioFiles?.length ||
     (item as any).numAudioFiles
   );
-
-  // Handle Scroll Progress inside chapter (for fallback)
-  const handleScroll = () => {
-    if (!contentRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = contentRef.current;
-    const scrollFraction = scrollHeight > clientHeight ? scrollTop / (scrollHeight - clientHeight) : 0;
-
-    let overallProgress = progress;
-    if (parsedEpub && parsedEpub.chapters.length > 0) {
-      const chapterWeight = 1 / parsedEpub.chapters.length;
-      overallProgress = (activeChapterIndex * chapterWeight) + (scrollFraction * chapterWeight);
-    } else {
-      overallProgress = Math.min(1, Math.max(0, scrollFraction));
-    }
-
-    const curPage = Math.max(1, Math.round(overallProgress * totalPages));
-    updateLocation(`page_${curPage}`, overallProgress, curPage, totalPages);
-  };
 
   const handleNextChapter = () => {
     if (parsedEpub && activeChapterIndex < parsedEpub.chapters.length - 1) {
@@ -314,16 +412,6 @@ export const EbookReader: React.FC = () => {
     const file = e.target.files?.[0];
     if (file) {
       openLocalFile(file);
-    }
-  };
-
-  const handleToggleAudio = () => {
-    if (player.item) {
-      player.togglePlay();
-      setShowAudioCompanion(true);
-    } else if (hasAudioCompanion) {
-      playerStore.loadAndPlay(item);
-      setShowAudioCompanion(true);
     }
   };
 
@@ -375,8 +463,8 @@ export const EbookReader: React.FC = () => {
         className="hidden"
       />
 
-      {/* LEFT TOOLBAR: Minimalist navigation & tools */}
-      <div className="w-14 bg-[#12161a] border-r border-[#232830] flex flex-col items-center justify-between py-5 shrink-0 z-20">
+      {/* LEFT TOOLBAR: Minimalist navigation & collapsed tool triggers */}
+      <div className="w-14 bg-[#12161a] border-r border-[#232830] flex flex-col items-center justify-between py-5 shrink-0 z-40 relative">
         {/* Top Controls */}
         <div className="flex flex-col items-center gap-3.5">
           <button
@@ -396,24 +484,45 @@ export const EbookReader: React.FC = () => {
             {isFullscreen ? <Minimize2 className="w-5 h-5 text-teal-400" /> : <Maximize2 className="w-5 h-5" />}
           </button>
 
-          {/* Audio Companion Toggle (Simultaneous Reading & Listening) */}
+          {/* AUDIO CONTROLS TRIGGER (Collapses neatly into left toolbar) */}
           <button
-            onClick={handleToggleAudio}
+            onClick={() => {
+              setShowAudioFlyout(!showAudioFlyout);
+              setShowChapterFlyout(false);
+            }}
             className={`p-2 rounded-xl transition-all relative ${
-              player.item && player.isPlaying
+              showAudioFlyout
                 ? 'bg-teal-500 text-black shadow-lg shadow-teal-500/30'
-                : player.item
+                : player.item && player.isPlaying
                 ? 'bg-teal-500/20 text-teal-400 border border-teal-500/40'
-                : hasAudioCompanion
+                : player.item
                 ? 'hover:bg-neutral-800 text-teal-400'
+                : hasAudioCompanion
+                ? 'hover:bg-neutral-800 text-stone-400'
                 : 'hover:bg-neutral-800 text-stone-400'
             }`}
-            title={player.item ? (player.isPlaying ? 'Audio companion playing (click to pause)' : 'Audio companion paused (click to play)') : 'Start audio companion'}
+            title="Audio Controls (Press A)"
           >
             <Headphones className="w-5 h-5" />
             {player.item && player.isPlaying && (
               <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
             )}
+          </button>
+
+          {/* CHAPTER & PAGE NAVIGATION (Type Chapter or Page) */}
+          <button
+            onClick={() => {
+              setShowChapterFlyout(!showChapterFlyout);
+              setShowAudioFlyout(false);
+            }}
+            className={`p-2 rounded-xl transition-all relative ${
+              showChapterFlyout
+                ? 'bg-teal-500 text-black shadow-lg shadow-teal-500/30'
+                : 'hover:bg-neutral-800 text-stone-400 hover:text-stone-100'
+            }`}
+            title="Jump to chapter or page by typing (Press C)"
+          >
+            <BookMarked className="w-5 h-5" />
           </button>
 
           {/* Open Local Ebook Button */}
@@ -440,16 +549,6 @@ export const EbookReader: React.FC = () => {
           >
             <Settings2 className="w-5 h-5" />
           </button>
-
-          {tableOfContents.length > 0 && (
-            <button
-              onClick={toggleToc}
-              className={`p-2 rounded-xl hover:bg-neutral-800 transition-colors ${showToc ? 'text-teal-400 bg-neutral-800' : 'text-stone-400 hover:text-stone-100'}`}
-              title="Table of contents"
-            >
-              <List className="w-5 h-5" />
-            </button>
-          )}
         </div>
 
         {/* Vertical Teal Progress Indicator Bar */}
@@ -470,7 +569,225 @@ export const EbookReader: React.FC = () => {
         </button>
       </div>
 
-      {/* CENTER: MangaDex-style Reading Canvas */}
+      {/* FLYOUT 1: COLLAPSED AUDIO CONTROLS (Slides out from Left Toolbar) */}
+      {showAudioFlyout && (
+        <div className="absolute left-16 top-12 z-50 w-84 bg-[#14181e]/98 backdrop-blur-2xl border border-teal-500/30 rounded-2xl shadow-2xl p-4 animate-fade-in text-xs text-neutral-100 flex flex-col gap-3.5">
+          {/* Header */}
+          <div className="flex items-center justify-between pb-2 border-b border-neutral-800 text-stone-400">
+            <div className="flex items-center gap-2">
+              <Headphones className="w-4 h-4 text-teal-400" />
+              <span className="font-semibold text-neutral-200 tracking-wider text-[11px] uppercase">
+                Audio Companion
+              </span>
+              {player.item && player.isPlaying && (
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              )}
+            </div>
+            <button
+              onClick={() => setShowAudioFlyout(false)}
+              className="p-1 hover:text-white text-stone-400 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {player.item ? (
+            <>
+              {/* Active Book & Chapter Info */}
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg overflow-hidden bg-neutral-900 border border-neutral-800 shrink-0">
+                  {coverSrc ? (
+                    <img src={coverSrc} alt="" className="w-full h-full object-cover" />
+                  ) : (
+                    <BookOpen className="w-5 h-5 m-2.5 text-stone-500" />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <span className="font-semibold text-neutral-100 truncate block text-xs">
+                    {player.item.media?.metadata?.title}
+                  </span>
+                  <span className="text-[11px] text-teal-400 truncate block">
+                    {player.activeChapter?.title || 'Audiobook Narration'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Time Scrubber */}
+              <div className="flex flex-col gap-1">
+                <input
+                  type="range"
+                  min={0}
+                  max={player.duration || 100}
+                  value={player.currentTime}
+                  onChange={(e) => player.seek(Number(e.target.value))}
+                  className="w-full h-1.5 bg-neutral-800 rounded appearance-none cursor-pointer accent-teal-400"
+                />
+                <div className="flex justify-between items-center text-[10px] text-stone-400 font-mono">
+                  <span>{formatDuration(player.currentTime, true)}</span>
+                  <span>{formatDuration(player.duration, true)}</span>
+                </div>
+              </div>
+
+              {/* Primary Playback Buttons */}
+              <div className="flex items-center justify-center gap-4 py-1">
+                <button
+                  onClick={() => player.skipBackward(15)}
+                  className="p-2 rounded-full hover:bg-neutral-800 text-stone-300 hover:text-white transition-colors"
+                  title="Skip backward 15s"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={player.togglePlay}
+                  className="w-10 h-10 rounded-full bg-teal-500 hover:bg-teal-400 text-black flex items-center justify-center transition-transform active:scale-95 shadow-lg shadow-teal-500/25"
+                  title={player.isPlaying ? 'Pause' : 'Play'}
+                >
+                  {player.isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+                </button>
+                <button
+                  onClick={() => player.skipForward(30)}
+                  className="p-2 rounded-full hover:bg-neutral-800 text-stone-300 hover:text-white transition-colors"
+                  title="Skip forward 30s"
+                >
+                  <RotateCw className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Speed Buttons up to 4.0x */}
+              <div className="flex items-center justify-between pt-2 border-t border-neutral-800/80">
+                <span className="text-stone-400 text-[11px]">Speed:</span>
+                <div className="flex flex-wrap gap-1">
+                  {[0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0].map(rate => (
+                    <button
+                      key={rate}
+                      onClick={() => player.setPlaybackRate(rate)}
+                      className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors ${
+                        player.playbackRate === rate
+                          ? 'bg-teal-500 text-black font-bold'
+                          : 'bg-neutral-800 hover:bg-neutral-700 text-stone-300'
+                      }`}
+                    >
+                      {rate}x
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-6 text-center text-stone-400 gap-2">
+              <Headphones className="w-8 h-8 text-stone-600 mb-1" />
+              <p className="text-xs">No active audiobook loaded.</p>
+              {hasAudioCompanion && (
+                <button
+                  onClick={() => playerStore.loadAndPlay(item)}
+                  className="mt-2 px-3 py-1.5 rounded-xl bg-teal-500 text-black font-semibold text-xs hover:bg-teal-400 transition-colors"
+                >
+                  Start Companion Audio
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* FLYOUT 2: CHAPTER & PAGE NAVIGATION (Type Chapter or Page #) */}
+      {showChapterFlyout && (
+        <div className="absolute left-16 top-20 z-50 w-96 max-h-[85vh] bg-[#14181e]/98 backdrop-blur-2xl border border-[#232830] rounded-2xl shadow-2xl p-4 animate-fade-in text-xs text-neutral-100 flex flex-col gap-3">
+          {/* Header */}
+          <div className="flex items-center justify-between pb-2 border-b border-neutral-800 text-stone-400">
+            <div className="flex items-center gap-2">
+              <BookMarked className="w-4 h-4 text-teal-400" />
+              <span className="font-semibold text-neutral-200 tracking-wider text-[11px] uppercase">
+                Jump To Chapter / Page
+              </span>
+            </div>
+            <button
+              onClick={() => setShowChapterFlyout(false)}
+              className="p-1 hover:text-white text-stone-400 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Quick Jump Input Form ("by typing what chapter so ye") */}
+          <form onSubmit={handleQuickJump} className="flex flex-col gap-1.5">
+            <div className="relative flex items-center">
+              <input
+                ref={jumpInputRef}
+                type="text"
+                value={jumpQuery}
+                onChange={(e) => setJumpQuery(e.target.value)}
+                placeholder="Type chapter # or page # (e.g. 6 or 118)..."
+                autoFocus
+                className="w-full bg-neutral-900 border border-neutral-700/80 rounded-xl py-2 pl-3 pr-16 text-xs text-stone-100 placeholder-stone-500 focus:outline-none focus:border-teal-500"
+              />
+              <button
+                type="submit"
+                className="absolute right-1 px-3 py-1 rounded-lg bg-teal-500 hover:bg-teal-400 text-black font-semibold text-[11px] transition-colors"
+              >
+                Jump
+              </button>
+            </div>
+            {jumpFeedback && (
+              <span className="text-[11px] text-teal-400 font-medium px-1 flex items-center gap-1 animate-fade-in">
+                <Check className="w-3 h-3" /> {jumpFeedback}
+              </span>
+            )}
+          </form>
+
+          {/* Quick Position Bar */}
+          <div className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-neutral-900/60 border border-neutral-800 text-[11px] text-stone-400 font-mono">
+            <span>Current: Page {currentPage} of {totalPages}</span>
+            <span className="text-teal-400 font-semibold">{formatProgressPercent(progress)}</span>
+          </div>
+
+          {/* Table of Contents / Chapters List */}
+          <div className="flex-1 flex flex-col min-h-0 pt-2 border-t border-neutral-800">
+            <span className="text-[11px] font-semibold text-stone-400 mb-2 block">
+              {tableOfContents.length > 0 ? 'Chapters in this volume:' : 'Pages & Markers:'}
+            </span>
+            <div className="overflow-y-auto space-y-1 pr-1 flex-1 max-h-64">
+              {tableOfContents.length > 0 ? (
+                tableOfContents
+                  .filter(c => !jumpQuery || c.title.toLowerCase().includes(jumpQuery.toLowerCase()))
+                  .map((chap, idx) => (
+                    <button
+                      key={chap.id || idx}
+                      onClick={() => {
+                        if (parsedEpub) {
+                          const targetIdx = parsedEpub.chapters.findIndex(c => c.id === chap.id || c.href === chap.href);
+                          if (targetIdx !== -1) {
+                            setActiveChapterIndex(targetIdx);
+                            const newProg = (targetIdx + 1) / parsedEpub.chapters.length;
+                            const curP = Math.max(1, Math.round(newProg * totalPages));
+                            updateLocation(`chap_${targetIdx}`, newProg, curP, totalPages, chap.title);
+                          }
+                        } else if (chap.page) {
+                          updateLocation(String(chap.page), chap.page / totalPages, chap.page, totalPages, chap.title);
+                        }
+                        setShowChapterFlyout(false);
+                      }}
+                      className={`w-full text-left py-2 px-2.5 rounded-xl text-xs truncate transition-colors flex items-center justify-between ${
+                        activeChapterIndex === idx
+                          ? 'bg-teal-500/20 text-teal-300 font-medium border border-teal-500/30'
+                          : 'text-stone-300 hover:text-white hover:bg-neutral-800'
+                      }`}
+                    >
+                      <span className="truncate">{chap.title}</span>
+                      {chap.page && <span className="text-[10px] text-stone-500 font-mono ml-2">p.{chap.page}</span>}
+                    </button>
+                  ))
+              ) : (
+                <div className="p-3 text-center text-stone-500 text-[11px]">
+                  Use the jump box above to type any page number (1 to {totalPages}).
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CENTER: Ultra-Clean MangaDex Reading Canvas */}
       <div className="flex-1 flex flex-col items-center justify-between p-1 md:p-3 overflow-hidden relative">
         {/* Floating Settings Bar (if open) */}
         {showSettings && (
@@ -580,7 +897,7 @@ export const EbookReader: React.FC = () => {
               <span className="text-sm">Preparing book text...</span>
             </div>
           ) : isPdf ? (
-            /* MangaDex Page-by-Page PDF Reader */
+            /* MangaDex Page-by-Page PDF Reader with Zoom & Clean Controls */
             <PdfPageReader
               url={localBlobUrl || activePdfUrl}
               buffer={pdfBuffer && pdfBuffer.byteLength > 0 ? pdfBuffer : null}
@@ -596,11 +913,7 @@ export const EbookReader: React.FC = () => {
           ) : currentChapter?.html ? (
             /* EPUB Paginated Chapter View */
             <div className="relative flex-1 w-full h-full flex flex-col justify-between overflow-hidden select-text">
-              {/* Paged Content Area */}
-              <div 
-                className="relative flex-1 w-full h-full overflow-y-auto px-6 md:px-14 py-8"
-                onScroll={handleScroll}
-              >
+              <div className="relative flex-1 w-full h-full overflow-y-auto px-6 md:px-14 py-8">
                 <div
                   style={{
                     fontSize: `${preferences.fontSize}px`,
@@ -612,7 +925,7 @@ export const EbookReader: React.FC = () => {
                 />
               </div>
 
-              {/* MangaDex Bottom Scrubber for EPUB */}
+              {/* Clean Bottom Navigation for EPUB */}
               <div className="px-6 py-2.5 bg-[#14181e]/95 backdrop-blur-md border-t border-neutral-800/80 flex items-center justify-between gap-4 text-xs text-stone-300 shrink-0">
                 <button
                   onClick={handlePrevChapter}
@@ -664,86 +977,6 @@ export const EbookReader: React.FC = () => {
             </div>
           )}
         </div>
-
-        {/* DOCKED AUDIO COMPANION BAR (Simultaneous Reading & Listening!) */}
-        {player.item && showAudioCompanion && (
-          <div className="w-full max-w-2xl mx-auto mt-2 px-4 py-2.5 rounded-2xl bg-[#14181e]/95 backdrop-blur-xl border border-teal-500/30 shadow-2xl flex items-center justify-between gap-3 text-xs text-neutral-100 z-30 animate-slide-up">
-            {/* Left: Indicator & Title */}
-            <div className="flex items-center gap-2.5 min-w-0 max-w-xs">
-              <div className="w-8 h-8 rounded-lg overflow-hidden bg-neutral-900 border border-teal-500/40 shrink-0 relative flex items-center justify-center">
-                <Headphones className={`w-4 h-4 ${player.isPlaying ? 'text-teal-400 animate-pulse' : 'text-stone-400'}`} />
-              </div>
-              <div className="min-w-0">
-                <span className="font-semibold text-neutral-100 truncate block text-[11px]">
-                  {player.item.media?.metadata?.title}
-                </span>
-                <span className="text-[10px] text-teal-400 truncate block">
-                  {player.activeChapter?.title || 'Audio Companion'}
-                </span>
-              </div>
-            </div>
-
-            {/* Center: Controls & Scrubber */}
-            <div className="flex-1 max-w-sm flex items-center gap-2">
-              <button
-                onClick={() => player.skipBackward(15)}
-                className="p-1 text-stone-400 hover:text-white transition-colors"
-                title="Skip 15s"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={player.togglePlay}
-                className="w-7 h-7 rounded-full bg-teal-500 hover:bg-teal-400 text-black flex items-center justify-center transition-transform active:scale-95 shadow-md shadow-teal-500/20"
-                title={player.isPlaying ? 'Pause' : 'Play'}
-              >
-                {player.isPlaying ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current ml-0.5" />}
-              </button>
-              <button
-                onClick={() => player.skipForward(30)}
-                className="p-1 text-stone-400 hover:text-white transition-colors"
-                title="Skip 30s"
-              >
-                <RotateCw className="w-3.5 h-3.5" />
-              </button>
-
-              {/* Scrubber */}
-              <div className="flex-1 flex items-center gap-1.5 font-mono text-[9px] text-stone-400">
-                <span>{formatDuration(player.currentTime, true)}</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={player.duration || 100}
-                  value={player.currentTime}
-                  onChange={(e) => player.seek(Number(e.target.value))}
-                  className="w-full h-1 bg-neutral-800 rounded appearance-none cursor-pointer accent-teal-400"
-                />
-                <span>{formatDuration(player.duration, true)}</span>
-              </div>
-            </div>
-
-            {/* Right: Speed & Close */}
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={() => {
-                  const next = speedOptions[(speedOptions.indexOf(player.playbackRate) + 1) % speedOptions.length];
-                  player.setPlaybackRate(next);
-                }}
-                className="px-2 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-[10px] font-mono text-teal-300 font-semibold"
-                title="Change playback speed (up to 4.0x)"
-              >
-                {player.playbackRate}x
-              </button>
-              <button
-                onClick={() => setShowAudioCompanion(false)}
-                className="p-1 text-stone-400 hover:text-stone-200 transition-colors"
-                title="Hide companion bar"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* RIGHT: Reading Progress Sidebar */}
