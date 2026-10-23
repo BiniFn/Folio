@@ -28,6 +28,7 @@ import { usePlayer, playerStore } from '../../stores/playerStore';
 import { absClient } from '../../api/absClient';
 import { parseEpub, ParsedEpub } from '../../services/epubParser';
 import { formatDuration, formatProgressPercent } from '../../utils/formatters';
+import { PdfPageReader } from './PdfPageReader';
 
 export const EbookReader: React.FC = () => {
   const {
@@ -71,8 +72,8 @@ export const EbookReader: React.FC = () => {
   const [activeChapterIndex, setActiveChapterIndex] = useState(0);
   const [pdfZoom, setPdfZoom] = useState(100);
   const [activePdfUrl, setActivePdfUrl] = useState<string | null>(null);
+  const [pdfBuffer, setPdfBuffer] = useState<ArrayBuffer | null>(localBuffer);
   const [showAudioCompanion, setShowAudioCompanion] = useState(true);
-  const [showPdfBrowserToolbar, setShowPdfBrowserToolbar] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [coverSrc, setCoverSrc] = useState<string>('');
 
@@ -105,10 +106,17 @@ export const EbookReader: React.FC = () => {
 
       try {
         // 1. Local PDF
-        if (isPdf && localBlobUrl) {
-          setActivePdfUrl(localBlobUrl);
-          const estTotal = 200;
-          updateLocation('1', progress || 0, 1, estTotal, 'Page 1');
+        if (isPdf) {
+          if (localBuffer) {
+            setPdfBuffer(localBuffer);
+          } else if (localFile) {
+            const buf = await localFile.arrayBuffer();
+            if (isCancelled) return;
+            setPdfBuffer(buf);
+          }
+          if (localBlobUrl) {
+            setActivePdfUrl(localBlobUrl);
+          }
           setIsLoading(false);
           return;
         }
@@ -138,12 +146,10 @@ export const EbookReader: React.FC = () => {
 
           // Remote PDF
           if (isPdf) {
+            setPdfBuffer(buffer);
             const blob = new Blob([buffer], { type: 'application/pdf' });
             createdBlobUrl = URL.createObjectURL(blob);
             setActivePdfUrl(createdBlobUrl);
-            const estTotal = 277;
-            const curPage = Math.max(1, Math.round((progress || 0.38) * estTotal));
-            updateLocation(String(curPage), progress || 0.38, curPage, estTotal, `Page ${curPage}`);
             setIsLoading(false);
             return;
           }
@@ -180,7 +186,7 @@ export const EbookReader: React.FC = () => {
         URL.revokeObjectURL(createdBlobUrl);
       }
     };
-  }, [isOpen, item?.id, ebookFile?.ino, localBlobUrl, localBuffer, isPdf]);
+  }, [isOpen, item?.id, ebookFile?.ino, localBlobUrl, localBuffer, localFile, isPdf]);
 
   // Fullscreen event listener
   useEffect(() => {
@@ -252,7 +258,7 @@ export const EbookReader: React.FC = () => {
     (item as any).numAudioFiles
   );
 
-  // Handle Scroll Progress inside chapter
+  // Handle Scroll Progress inside chapter (for fallback)
   const handleScroll = () => {
     if (!contentRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = contentRef.current;
@@ -274,8 +280,9 @@ export const EbookReader: React.FC = () => {
     if (parsedEpub && activeChapterIndex < parsedEpub.chapters.length - 1) {
       const nextIdx = activeChapterIndex + 1;
       setActiveChapterIndex(nextIdx);
-      const newProgress = nextIdx / parsedEpub.chapters.length;
-      updateLocation(`chap_${nextIdx}`, newProgress, undefined, undefined, parsedEpub.chapters[nextIdx].title);
+      const newProgress = (nextIdx + 1) / parsedEpub.chapters.length;
+      const curPage = Math.max(1, Math.round(newProgress * totalPages));
+      updateLocation(`chap_${nextIdx}`, newProgress, curPage, totalPages, parsedEpub.chapters[nextIdx].title);
       contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
     } else {
       const nextPage = Math.min(totalPages, currentPage + 1);
@@ -289,7 +296,8 @@ export const EbookReader: React.FC = () => {
       const prevIdx = activeChapterIndex - 1;
       setActiveChapterIndex(prevIdx);
       const newProgress = prevIdx / parsedEpub.chapters.length;
-      updateLocation(`chap_${prevIdx}`, newProgress, undefined, undefined, parsedEpub.chapters[prevIdx].title);
+      const curPage = Math.max(1, Math.round(newProgress * totalPages));
+      updateLocation(`chap_${prevIdx}`, newProgress, curPage, totalPages, parsedEpub.chapters[prevIdx].title);
       contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
     } else {
       const prevPage = Math.max(1, currentPage - 1);
@@ -353,7 +361,7 @@ export const EbookReader: React.FC = () => {
   const speedOptions = [0.75, 1.0, 1.2, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0];
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#0f1216] flex overflow-hidden animate-fade-in font-sans select-text">
+    <div className="fixed inset-0 z-50 bg-[#0b0e11] flex overflow-hidden animate-fade-in font-sans select-text">
       {/* Hidden local file input */}
       <input
         type="file"
@@ -458,8 +466,8 @@ export const EbookReader: React.FC = () => {
         </button>
       </div>
 
-      {/* CENTER: Reading Canvas */}
-      <div className="flex-1 flex flex-col items-center justify-between p-2 md:p-4 overflow-hidden relative">
+      {/* CENTER: MangaDex-style Reading Canvas */}
+      <div className="flex-1 flex flex-col items-center justify-between p-1 md:p-3 overflow-hidden relative">
         {/* Floating Settings Bar (if open) */}
         {showSettings && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-[#181c21] border border-[#232830] rounded-2xl shadow-2xl p-4 flex flex-wrap items-center gap-5 animate-fade-in text-xs text-stone-300">
@@ -550,17 +558,16 @@ export const EbookReader: React.FC = () => {
           </div>
         )}
 
-        {/* Reading Page Canvas */}
+        {/* Reading Page Canvas Area */}
         <div 
           ref={contentRef}
-          onScroll={handleScroll}
           style={{
             maxWidth: isPdf ? '100%' : preferences.maxWidth >= 9999 ? '100%' : `${preferences.maxWidth}px`
           }}
           className={`w-full flex-1 ${
             isPdf 
-              ? 'p-0 m-0 rounded-2xl overflow-hidden bg-neutral-900 border border-neutral-800 shadow-2xl relative flex flex-col' 
-              : `${themeStyle.canvas} ${themeStyle.pageBorder} rounded-2xl border overflow-y-auto px-6 md:px-14 py-8 transition-colors shadow-2xl relative flex flex-col`
+              ? 'p-0 m-0 rounded-2xl overflow-hidden bg-[#0b0e11] border border-neutral-800/80 shadow-2xl relative flex flex-col' 
+              : `${themeStyle.canvas} ${themeStyle.pageBorder} rounded-2xl border overflow-hidden transition-colors shadow-2xl relative flex flex-col`
           }`}
         >
           {isLoading ? (
@@ -568,58 +575,71 @@ export const EbookReader: React.FC = () => {
               <BookOpen className="w-8 h-8 text-teal-500 animate-pulse" />
               <span className="text-sm">Preparing book text...</span>
             </div>
-          ) : isPdf && activePdfUrl ? (
-            /* PDF Full Bleed Native Frame */
-            <div className="flex-1 flex flex-col w-full h-full min-h-[500px]">
-              {/* PDF Top Bar */}
-              <div className="flex justify-between items-center px-4 py-2.5 bg-[#14181d]/95 backdrop-blur-md border-b border-neutral-800 text-xs text-stone-300 shrink-0">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <span className="truncate max-w-sm md:max-w-md font-medium text-stone-200">
-                    {metadata.title || localFile?.name || 'Document'}
-                  </span>
-                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-teal-500/10 text-teal-400 border border-teal-500/20">
-                    PDF
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setShowPdfBrowserToolbar(!showPdfBrowserToolbar)}
-                    className={`px-2.5 py-1 rounded text-[11px] transition-colors border ${
-                      showPdfBrowserToolbar 
-                        ? 'bg-teal-500/20 text-teal-300 border-teal-500/40' 
-                        : 'bg-neutral-800/80 hover:bg-neutral-700 text-stone-300 border-neutral-700'
-                    }`}
-                    title="Toggle native browser PDF print, search & page controls"
-                  >
-                    {showPdfBrowserToolbar ? 'Clean View' : 'PDF Tools'}
-                  </button>
-                  <button
-                    onClick={toggleFullscreen}
-                    className="p-1.5 rounded bg-neutral-800/80 hover:bg-neutral-700 text-stone-300 hover:text-white transition-colors"
-                    title={isFullscreen ? 'Exit Fullscreen (F)' : 'Fullscreen (F)'}
-                  >
-                    {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
-                  </button>
-                </div>
-              </div>
-              <iframe
-                key={showPdfBrowserToolbar ? 'pdf-tools' : 'pdf-clean'}
-                src={`${activePdfUrl}#toolbar=${showPdfBrowserToolbar ? 1 : 0}&navpanes=0&scrollbar=1&view=FitH&pagemode=none`}
-                className="w-full flex-1 border-0 bg-neutral-900"
-                title="PDF Reader"
-              />
-            </div>
-          ) : currentChapter?.html ? (
-            /* EPUB Rendered Chapter */
-            <div
-              style={{
-                fontSize: `${preferences.fontSize}px`,
-                lineHeight: preferences.lineHeight,
-                fontFamily: preferences.fontFamily === 'serif' ? 'Merriweather, Georgia, serif' : preferences.fontFamily === 'sans' ? 'Inter, sans-serif' : 'JetBrains Mono, monospace',
+          ) : isPdf ? (
+            /* MangaDex Page-by-Page PDF Reader */
+            <PdfPageReader
+              buffer={pdfBuffer || localBuffer}
+              url={activePdfUrl || localBlobUrl}
+              initialPage={currentPage || 1}
+              title={metadata.title || localFile?.name || 'Document'}
+              onPageChange={(page, total) => {
+                const newProgress = total > 0 ? page / total : 0;
+                updateLocation(String(page), newProgress, page, total, `Page ${page}`);
               }}
-              className="reader-content select-text"
-              dangerouslySetInnerHTML={{ __html: currentChapter.html }}
+              onToggleFullscreen={toggleFullscreen}
+              isFullscreen={isFullscreen}
             />
+          ) : currentChapter?.html ? (
+            /* EPUB Paginated Chapter View */
+            <div className="relative flex-1 w-full h-full flex flex-col justify-between overflow-hidden select-text">
+              {/* Paged Content Area */}
+              <div 
+                className="relative flex-1 w-full h-full overflow-y-auto px-6 md:px-14 py-8"
+                onScroll={handleScroll}
+              >
+                <div
+                  style={{
+                    fontSize: `${preferences.fontSize}px`,
+                    lineHeight: preferences.lineHeight,
+                    fontFamily: preferences.fontFamily === 'serif' ? 'Merriweather, Georgia, serif' : preferences.fontFamily === 'sans' ? 'Inter, sans-serif' : 'JetBrains Mono, monospace',
+                  }}
+                  className="reader-content select-text"
+                  dangerouslySetInnerHTML={{ __html: currentChapter.html }}
+                />
+              </div>
+
+              {/* MangaDex Bottom Scrubber for EPUB */}
+              <div className="px-6 py-2.5 bg-[#14181e]/95 backdrop-blur-md border-t border-neutral-800/80 flex items-center justify-between gap-4 text-xs text-stone-300 shrink-0">
+                <button
+                  onClick={handlePrevChapter}
+                  disabled={activeChapterIndex <= 0 && currentPage <= 1}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 disabled:opacity-40 text-stone-300 hover:text-white transition-colors border border-neutral-800"
+                >
+                  <ChevronLeft className="w-4 h-4" /> Prev Chapter
+                </button>
+                <div className="flex-1 flex items-center gap-3">
+                  <span className="font-mono text-[11px] text-teal-400 truncate max-w-[150px]">
+                    {activeTitle}
+                  </span>
+                  <div className="flex-1 h-1.5 bg-neutral-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-teal-400 rounded-full transition-all duration-300"
+                      style={{ width: `${Math.min(100, Math.max(2, progress * 100))}%` }}
+                    />
+                  </div>
+                  <span className="font-mono text-[11px] text-stone-400">
+                    {Math.round(progress * 100)}%
+                  </span>
+                </div>
+                <button
+                  onClick={handleNextChapter}
+                  disabled={parsedEpub ? activeChapterIndex >= parsedEpub.chapters.length - 1 : false}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 disabled:opacity-40 text-stone-300 hover:text-white transition-colors border border-neutral-800"
+                >
+                  Next Chapter <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
           ) : (
             /* Excerpt Fallback */
             <div
@@ -628,7 +648,7 @@ export const EbookReader: React.FC = () => {
                 lineHeight: preferences.lineHeight,
                 fontFamily: preferences.fontFamily === 'serif' ? 'Merriweather, Georgia, serif' : 'Inter, sans-serif',
               }}
-              className="reader-content select-text text-neutral-100"
+              className="reader-content select-text text-neutral-100 p-8"
             >
               <h2 className="text-xl font-bold font-serif mb-4">{metadata.title || activeTitle}</h2>
               <p className="leading-relaxed mb-4">
@@ -720,27 +740,6 @@ export const EbookReader: React.FC = () => {
             </div>
           </div>
         )}
-
-        {/* Navigation Arrows for Turning Pages / Chapters */}
-        {!isPdf && (
-          <div className="flex items-center gap-8 mt-2 text-stone-400">
-            <button
-              onClick={handlePrevChapter}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full hover:bg-neutral-800 text-xs transition-colors"
-            >
-              <ChevronLeft className="w-4 h-4" /> Previous
-            </button>
-            <span className="text-xs text-stone-500 font-mono">
-              Page {currentPage} of {totalPages}
-            </span>
-            <button
-              onClick={handleNextChapter}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full hover:bg-neutral-800 text-xs transition-colors"
-            >
-              Next <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-        )}
       </div>
 
       {/* RIGHT: Reading Progress Sidebar */}
@@ -805,7 +804,7 @@ export const EbookReader: React.FC = () => {
             </div>
           </div>
 
-          {/* Estimated Stats */}
+          {/* Estimated Stats - Live updating with each page turn */}
           <div className="mt-4 pt-4 border-t border-neutral-800/80 grid grid-cols-2 gap-4 text-xs">
             <div>
               <span className="text-stone-500 block mb-1">Time Remaining</span>

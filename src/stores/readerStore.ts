@@ -331,10 +331,18 @@ export const readerStore = {
 
   updateLocation(location: string, progress: number, currentPage?: number, totalPages?: number, chapterTitle?: string) {
     const clampedProgress = Math.min(1, Math.max(0, progress));
-    const curPage = currentPage ?? Math.max(1, Math.round(clampedProgress * (globalState.totalPages || 200)));
-    const totPages = totalPages ?? globalState.totalPages;
-    const remainingChaps = Math.max(0, Math.round((1 - clampedProgress) * globalState.totalChapters));
-    const minLeft = Math.round((1 - clampedProgress) * 340);
+    const totPages = totalPages ?? (globalState.totalPages || 200);
+    const curPage = currentPage ?? Math.max(1, Math.round(clampedProgress * totPages));
+    const pagesLeft = Math.max(0, totPages - curPage);
+
+    // Calculate remaining chapters based on TOC or estimated ~22 pages per chapter
+    const totalChaps = globalState.tableOfContents.length > 0 
+      ? globalState.tableOfContents.length 
+      : Math.max(1, Math.round(totPages / 22));
+    const remainingChaps = Math.max(0, Math.round((1 - clampedProgress) * totalChaps));
+
+    // Calculate time left based on pages left (~1.5 min per book page)
+    const minLeft = Math.max(1, Math.round(pagesLeft * 1.4));
 
     globalState = {
       ...globalState,
@@ -342,6 +350,7 @@ export const readerStore = {
       progress: clampedProgress,
       currentPage: curPage,
       totalPages: totPages,
+      totalChapters: totalChaps,
       currentChapterTitle: chapterTitle || globalState.currentChapterTitle,
       remainingChapters: remainingChaps,
       estimatedMinutesLeft: minLeft,
