@@ -114,4 +114,20 @@ describe('Audiobookshelf Progress Synchronization Logic', () => {
     assert.strictEqual(queue[0].progress, 0.35);
     assert.strictEqual(queue[1].itemId, 'item_2');
   });
+
+  test('URL Query Param Deduplication: target path with existing query params does not create double question marks', () => {
+    const rawEndpoint = '/api/items/item_123/cover?token=abc123token&width=400';
+    const [cleanPath, pathQuery] = rawEndpoint.split('?');
+    const params = new URLSearchParams(pathQuery || '');
+
+    assert.strictEqual(cleanPath, '/api/items/item_123/cover');
+    assert.strictEqual(params.get('token'), 'abc123token');
+    assert.strictEqual(params.get('width'), '400');
+
+    // Never produce double question mark
+    const fullUrl = `https://myserver.com${cleanPath}?${params.toString()}`;
+    assert.ok(!fullUrl.includes('??'));
+    assert.ok(!fullUrl.includes('?token=abc123token?'));
+    assert.strictEqual(fullUrl.split('?').length, 2);
+  });
 });

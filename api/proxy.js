@@ -42,6 +42,9 @@ export default async function handler(request) {
       targetPath = '/' + targetPath;
     }
 
+    // Split targetPath if query parameters were attached directly to path
+    const [cleanPath, pathQuery] = targetPath.split('?');
+
     if (!targetServer) {
       return new Response(
         JSON.stringify({ 
@@ -84,12 +87,23 @@ export default async function handler(request) {
       );
     }
 
-    // Build target query parameters
+    // Build target query parameters without target and path
     const cleanParams = new URLSearchParams(url.searchParams);
     cleanParams.delete('target');
     cleanParams.delete('path');
 
-    const fullUrl = `${cleanBase}${targetPath}${cleanParams.toString() ? '?' + cleanParams.toString() : ''}`;
+    // If path contained embedded query params, merge them cleanly
+    if (pathQuery) {
+      const extraParams = new URLSearchParams(pathQuery);
+      extraParams.forEach((val, key) => {
+        if (!cleanParams.has(key)) {
+          cleanParams.set(key, val);
+        }
+      });
+    }
+
+    const queryString = cleanParams.toString();
+    const fullUrl = `${cleanBase}${cleanPath}${queryString ? '?' + queryString : ''}`;
 
     // Filter headers to forward
     const forwardHeaders = new Headers();

@@ -232,24 +232,16 @@ export const playerStore = {
       if (session.audioTracks && session.audioTracks.length > 0) {
         const firstTrack = session.audioTracks[0];
         if (firstTrack.contentUrl) {
-          // If relative URL, build full URL
           const endpoint = firstTrack.contentUrl.startsWith('/') ? firstTrack.contentUrl : `/${firstTrack.contentUrl}`;
-          streamUrl = absClient.getAudioFileStreamUrl(
-            auth.serverUrl,
-            auth.token,
-            item.id,
-            firstTrack.metadata?.filename || 'stream',
-            auth.useProxy
-          );
-          // or use direct contentUrl with token
-          streamUrl = `${auth.serverUrl}${endpoint}${endpoint.includes('?') ? '&' : '?'}token=${encodeURIComponent(auth.token)}`;
+          streamUrl = absClient.formatUrl(auth.serverUrl, endpoint, { token: auth.token, useProxy: auth.useProxy });
         }
       }
 
       // Fallback: If session tracks don't have direct contentUrl, stream via first audio file / track
       if (!streamUrl && item.media?.tracks && item.media.tracks.length > 0) {
         const track = item.media.tracks[0];
-        streamUrl = `${auth.serverUrl}${track.contentUrl}${track.contentUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(auth.token)}`;
+        const endpoint = track.contentUrl.startsWith('/') ? track.contentUrl : `/${track.contentUrl}`;
+        streamUrl = absClient.formatUrl(auth.serverUrl, endpoint, { token: auth.token, useProxy: auth.useProxy });
       }
 
       if (!streamUrl && item.media?.audioFiles && item.media.audioFiles.length > 0) {

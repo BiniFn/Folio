@@ -1,12 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { Filter, ArrowUpDown, BookOpen, Headphones, SearchX, CheckCircle2 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Filter, ArrowUpDown, BookOpen, Headphones, SearchX, CheckCircle2, FolderOpen, UploadCloud } from 'lucide-react';
 import { LibraryItem } from '../types/audiobookshelf';
 import { BookCard } from '../components/common/BookCard';
 import { absClient } from '../api/absClient';
 import { useAuth } from '../stores/authStore';
+import { readerStore, getStoredLocalBooks, LocalBookRecord } from '../stores/readerStore';
 import { SAMPLE_ITEMS } from '../utils/sampleData';
 
-export type FilterType = 'all' | 'audiobooks' | 'ebooks' | 'in-progress' | 'finished' | 'unread' | 'favorites';
+export type FilterType = 'all' | 'audiobooks' | 'ebooks' | 'local' | 'in-progress' | 'finished' | 'unread' | 'favorites';
 export type SortOption = 'title' | 'author' | 'added' | 'duration' | 'progress';
 
 interface LibraryPageProps {
@@ -29,16 +30,50 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
   const [filter, setFilter] = useState<FilterType>(initialFilter);
   const [sort, setSort] = useState<SortOption>('title');
   const [isLoading, setIsLoading] = useState(true);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setFilter(initialFilter);
   }, [initialFilter]);
+
+  // Convert stored local books to LibraryItem format
+  const getLocalItems = (): LibraryItem[] => {
+    const records = getStoredLocalBooks();
+    return records.map(r => ({
+      id: r.id,
+      libraryId: 'local_library',
+      mediaType: 'book',
+      media: {
+        metadata: {
+          title: r.title,
+          authorName: r.author,
+        },
+        ebookFile: {
+          ino: 'local',
+          filename: r.fileName,
+          ext: r.format === 'pdf' ? '.pdf' : '.epub',
+          size: r.fileSize,
+        },
+      },
+      userMediaProgress: {
+        userId: 'local-user',
+        libraryItemId: r.id,
+        progress: r.progress,
+        ebookProgress: r.progress,
+        isFinished: r.progress >= 0.99,
+        lastUpdate: r.lastOpened,
+      },
+    }));
+  };
 
   useEffect(() => {
     let isCancelled = false;
 
     async function loadLibrary() {
       setIsLoading(true);
+      const localBooks = getLocalItems();
+
       if (isAuthenticated && serverUrl && token && activeLibraryId) {
         try {
           const res = await absClient.getLibraryItems(
@@ -49,14 +84,15 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
             useProxy
           );
           if (!isCancelled) {
-            setItems(res.results.length > 0 ? res.results : SAMPLE_ITEMS);
+            const fetched = res.results.length > 0 ? res.results : SAMPLE_ITEMS;
+            setItems([...localBooks, ...fetched]);
           }
         } catch (err) {
           console.warn('Could not fetch remote library items, falling back to local library data:', err);
-          if (!isCancelled) setItems(SAMPLE_ITEMS);
+          if (!isCancelled) setItems([...localBooks, ...SAMPLE_ITEMS]);
         }
       } else {
-        setItems(SAMPLE_ITEMS);
+        setItems([...localBooks, ...SAMPLE_ITEMS]);
       }
       setIsLoading(false);
     }
@@ -67,11 +103,55 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
     };
   }, [serverUrl, token, activeLibraryId, isAuthenticated]);
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      const file = files[0];
+      if (file.name.toLowerCase().endsWith('.epub') || file.name.toLowerCase().endsWith('.pdf')) {
+        readerStore.openLocalFile(file);
+      }
+    }
+  };
+
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      readerStore.openLocalFile(file);
+    }
+  };
+
   // Filtering Logic
   const filteredItems = items.filter((item) => {
     const meta = item.media?.metadata || {};
-    const hasAudio = !!(item.media?.duration || item.media?.numTracks || item.media?.audioFiles?.length);
-    const hasEbook = !!item.media?.ebookFile;
+    const hasAudio = !!(
+      item.media?.duration || 
+      item.media?.numTracks || 
+      item.media?.tracks?.length || 
+      item.media?.audioFiles?.length || 
+      (item as any).numAudioFiles
+    );
+    const hasEbook = !!(
+      item.media?.ebookFile ||
+      item.media?.ebookFormat ||
+      item.mediaType === 'book' ||
+      (item.media as any)?.libraryFiles?.some((f: any) => {
+        const ext = (f.metadata?.ext || f.ext || '').toLowerCase();
+        return ext === '.epub' || ext === '.pdf' || ext === 'epub' || ext === 'pdf';
+      })
+    );
+    const isLocal = item.id.startsWith('local_');
+
     const audioProg = item.userMediaProgress?.progress || 0;
     const ebookProg = item.userMediaProgress?.ebookProgress || 0;
     const isFinished = item.userMediaProgress?.isFinished || audioProg >= 0.99 || ebookProg >= 0.99;
@@ -93,6 +173,8 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
         return hasAudio;
       case 'ebooks':
         return hasEbook;
+      case 'local':
+        return isLocal;
       case 'in-progress':
         return inProgress;
       case 'finished':
@@ -134,6 +216,7 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
     { id: 'all', label: 'All Items' },
     { id: 'audiobooks', label: 'Audiobooks' },
     { id: 'ebooks', label: 'Ebooks' },
+    { id: 'local', label: 'Local Files' },
     { id: 'in-progress', label: 'In Progress' },
     { id: 'finished', label: 'Completed' },
     { id: 'unread', label: 'Unread' },
@@ -141,12 +224,36 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
   ];
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 md:px-8 py-8 flex flex-col gap-6 max-w-7xl mx-auto w-full pb-24">
+    <div 
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={`flex-1 overflow-y-auto px-4 md:px-8 py-8 flex flex-col gap-6 max-w-7xl mx-auto w-full pb-24 transition-colors relative ${
+        isDragging ? 'bg-teal-950/20' : ''
+      }`}
+    >
+      <input
+        type="file"
+        ref={fileInputRef}
+        onChange={handleFileInput}
+        accept=".epub,.pdf"
+        className="hidden"
+      />
+
+      {/* Drag & Drop Overlay */}
+      {isDragging && (
+        <div className="absolute inset-4 z-40 rounded-3xl border-2 border-dashed border-teal-400 bg-neutral-900/90 backdrop-blur-md flex flex-col items-center justify-center text-teal-400 gap-3 pointer-events-none animate-fade-in">
+          <UploadCloud className="w-16 h-16 animate-bounce" />
+          <h3 className="text-xl font-bold font-serif">Drop your EPUB or PDF here</h3>
+          <p className="text-xs text-stone-300">Folio will open it instantly in the reader</p>
+        </div>
+      )}
+
       {/* Title & Filter Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#232830]">
         <div>
           <h1 className="text-2xl font-serif font-bold text-neutral-100">
-            {filter === 'audiobooks' ? 'Audiobooks' : filter === 'ebooks' ? 'Ebooks' : filter === 'favorites' ? 'Favorites' : 'Library Collection'}
+            {filter === 'audiobooks' ? 'Audiobooks' : filter === 'ebooks' ? 'Ebooks' : filter === 'local' ? 'Local Books' : filter === 'favorites' ? 'Favorites' : 'Library Collection'}
           </h1>
           <p className="text-xs text-stone-400 mt-1">
             Showing {sortedItems.length} {sortedItems.length === 1 ? 'title' : 'titles'}
@@ -154,21 +261,33 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
           </p>
         </div>
 
-        {/* Sorting Dropdown */}
-        <div className="flex items-center gap-2 self-start sm:self-auto">
-          <ArrowUpDown className="w-3.5 h-3.5 text-stone-400" />
-          <span className="text-xs text-stone-400">Sort:</span>
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value as SortOption)}
-            className="bg-[#181c21] border border-[#232830] text-xs text-stone-200 rounded-lg px-2.5 py-1.5 outline-none focus:border-teal-500 cursor-pointer"
+        {/* Right side controls: Upload book & Sort */}
+        <div className="flex items-center gap-3 self-start sm:self-auto">
+          {/* Upload Local Book Button */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-1.5 py-1.5 px-3 rounded-lg bg-[#181c21] hover:bg-[#20252b] border border-[#232830] hover:border-teal-500/40 text-xs font-medium text-teal-300 hover:text-teal-200 transition-colors shadow-sm"
           >
-            <option value="title">Title (A-Z)</option>
-            <option value="author">Author</option>
-            <option value="duration">Duration</option>
-            <option value="progress">Reading Progress</option>
-            <option value="added">Recently Added</option>
-          </select>
+            <FolderOpen className="w-3.5 h-3.5 text-teal-400" />
+            <span>Open File</span>
+          </button>
+
+          {/* Sorting Dropdown */}
+          <div className="flex items-center gap-2">
+            <ArrowUpDown className="w-3.5 h-3.5 text-stone-400" />
+            <span className="text-xs text-stone-400">Sort:</span>
+            <select
+              value={sort}
+              onChange={(e) => setSort(e.target.value as SortOption)}
+              className="bg-[#181c21] border border-[#232830] text-xs text-stone-200 rounded-lg px-2.5 py-1.5 outline-none focus:border-teal-500 cursor-pointer"
+            >
+              <option value="title">Title (A-Z)</option>
+              <option value="author">Author</option>
+              <option value="duration">Duration</option>
+              <option value="progress">Reading Progress</option>
+              <option value="added">Recently Added</option>
+            </select>
+          </div>
         </div>
       </div>
 
@@ -214,14 +333,22 @@ export const LibraryPage: React.FC<LibraryPageProps> = ({
               ? `We couldn't find any titles matching "${searchQuery}". Try a different keyword.`
               : 'There are no items matching the selected filter in this library.'}
           </p>
-          <button
-            onClick={() => {
-              setFilter('all');
-            }}
-            className="mt-2 text-xs font-medium text-teal-400 hover:text-teal-300"
-          >
-            Reset all filters
-          </button>
+          <div className="flex gap-3 mt-2">
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="px-3.5 py-1.5 rounded-xl bg-teal-500 hover:bg-teal-400 text-black text-xs font-medium transition-colors"
+            >
+              Open a local book
+            </button>
+            <button
+              onClick={() => {
+                setFilter('all');
+              }}
+              className="px-3.5 py-1.5 rounded-xl bg-[#181c21] text-stone-300 hover:text-white border border-[#232830] text-xs font-medium"
+            >
+              Reset filters
+            </button>
+          </div>
         </div>
       )}
     </div>

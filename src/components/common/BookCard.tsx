@@ -22,8 +22,16 @@ export const BookCard: React.FC<BookCardProps> = ({
 }) => {
   const auth = authStore.getState();
   const metadata = item.media?.metadata || {};
-  const hasAudio = !!(item.media?.duration || item.media?.numTracks || item.media?.audioFiles?.length);
-  const hasEbook = !!item.media?.ebookFile;
+  const hasAudio = !!(item.media?.duration || item.media?.numTracks || item.media?.audioFiles?.length || item.media?.tracks?.length || (item as any).numAudioFiles);
+  const hasEbook = !!(
+    item.media?.ebookFile ||
+    item.media?.ebookFormat ||
+    item.mediaType === 'book' ||
+    (item.media as any)?.libraryFiles?.some((f: any) => {
+      const ext = (f.metadata?.ext || f.ext || '').toLowerCase();
+      return ext === '.epub' || ext === '.pdf' || ext === 'epub' || ext === 'pdf';
+    })
+  );
 
   const audioProgress = item.userMediaProgress?.progress || 0;
   const ebookProgress = item.userMediaProgress?.ebookProgress || 0;

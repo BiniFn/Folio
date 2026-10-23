@@ -64,7 +64,7 @@ export const HomePage: React.FC<HomePageProps> = ({
   const recentlyAddedShelf = shelves.find(s => s.id === 'recently-added' || s.id === 'recent')?.entities || [];
 
   const heroItem = continueListeningShelf[0] || continueReadingShelf[0] || SAMPLE_ITEMS[0];
-  const heroAudio = !!heroItem?.media?.duration;
+  const heroAudio = !!(heroItem?.media?.duration || heroItem?.media?.tracks?.length || heroItem?.media?.audioFiles?.length || (heroItem as any)?.numAudioFiles);
   const heroProgress = heroItem?.userMediaProgress?.progress || heroItem?.userMediaProgress?.ebookProgress || 0;
 
   const handleHeroResume = () => {
@@ -149,6 +149,9 @@ export const HomePage: React.FC<HomePageProps> = ({
               <img
                 src={absClient.getItemCoverUrl(serverUrl, token, heroItem.id, 500, useProxy)}
                 alt={heroItem.media?.metadata?.title}
+                onError={(e) => {
+                  (e.target as HTMLElement).style.display = 'none';
+                }}
                 className="w-full h-full object-cover"
               />
             ) : null}

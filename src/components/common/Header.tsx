@@ -1,6 +1,7 @@
-import React from 'react';
-import { Search, Library as LibraryIcon, ChevronDown, LogOut, Radio, User } from 'lucide-react';
+import React, { useRef } from 'react';
+import { Search, Library as LibraryIcon, ChevronDown, LogOut, Radio, User, FolderOpen } from 'lucide-react';
 import { useAuth } from '../../stores/authStore';
+import { readerStore } from '../../stores/readerStore';
 
 interface HeaderProps {
   searchQuery: string;
@@ -16,6 +17,14 @@ export const Header: React.FC<HeaderProps> = ({
   const { user, serverUrl, libraries, activeLibraryId, setActiveLibrary, logout } = useAuth();
   const [showLibMenu, setShowLibMenu] = React.useState(false);
   const [showUserMenu, setShowUserMenu] = React.useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      readerStore.openLocalFile(file);
+    }
+  };
 
   const activeLib = libraries.find(l => l.id === activeLibraryId);
   const serverHost = serverUrl ? new URL(serverUrl).host : 'Connected';
@@ -96,8 +105,27 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Server Status & User Profile */}
-      <div className="flex items-center gap-3">
+      {/* Server Status, Local File & User Profile */}
+      <div className="flex items-center gap-2.5">
+        {/* Hidden local file input */}
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={handleFileChange}
+          accept=".epub,.pdf"
+          className="hidden"
+        />
+
+        {/* Open Local File button */}
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="flex items-center gap-1.5 py-1.5 px-3 rounded-full bg-[#181c21] hover:bg-[#22272e] border border-[#232830] hover:border-teal-500/40 text-xs font-medium text-stone-300 hover:text-white transition-all shadow-sm"
+          title="Open local EPUB or PDF from computer"
+        >
+          <FolderOpen className="w-3.5 h-3.5 text-teal-400" />
+          <span className="hidden sm:inline">Open Book</span>
+        </button>
+
         {/* Server Indicator Pill */}
         <div className="hidden lg:flex items-center gap-2 py-1 px-3 rounded-full bg-teal-950/40 border border-teal-800/40 text-[11px] text-teal-300">
           <span className="w-2 h-2 rounded-full bg-teal-400 animate-pulse" />

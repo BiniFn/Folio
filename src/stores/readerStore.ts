@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { LibraryItem, EbookFile, ReaderTheme, ReaderFont, ReaderPreferences } from '../types/audiobookshelf';
 import { progressSyncManager } from '../services/progressSync';
 import { authStore } from './authStore';
+import { parseEpub } from '../services/epubParser';
 
 export interface TocChapter {
   id: string;
@@ -11,10 +12,27 @@ export interface TocChapter {
   subchapters?: TocChapter[];
 }
 
+export interface LocalBookRecord {
+  id: string;
+  isLocal: true;
+  title: string;
+  author: string;
+  format: 'epub' | 'pdf';
+  fileName: string;
+  fileSize: number;
+  lastOpened: number;
+  progress: number;
+  currentLocation?: string;
+  coverDataUrl?: string;
+}
+
 export interface ReaderState {
   isOpen: boolean;
   item: LibraryItem | null;
   ebookFile: EbookFile | null;
+  localFile: File | null;
+  localBuffer: ArrayBuffer | null;
+  localBlobUrl: string | null;
   currentLocation: string; // EPUB CFI or page number
   progress: number; // 0.0 - 1.0
   currentPage: number;
@@ -31,6 +49,33 @@ export interface ReaderState {
 }
 
 const PREF_STORAGE_KEY = 'abs_reader_preferences_v1';
+const LOCAL_BOOKS_STORAGE_KEY = 'folio_local_books_v1';
+
+export function getStoredLocalBooks(): LocalBookRecord[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_BOOKS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveStoredLocalBook(book: LocalBookRecord) {
+  try {
+    const list = getStoredLocalBooks().filter(b => b.id !== book.id && b.fileName !== book.fileName);
+    list.unshift(book);
+    localStorage.setItem(LOCAL_BOOKS_STORAGE_KEY, JSON.stringify(list.slice(0, 30)));
+  } catch (err) {
+    console.error('Failed to save local book record', err);
+  }
+}
+
+export function removeStoredLocalBook(id: string) {
+  try {
+    const list = getStoredLocalBooks().filter(b => b.id !== id);
+    localStorage.setItem(LOCAL_BOOKS_STORAGE_KEY, JSON.stringify(list));
+  } catch {}
+}
 
 const defaultPreferences: ReaderPreferences = {
   theme: 'dark',
@@ -55,6 +100,9 @@ let globalState: ReaderState = {
   isOpen: false,
   item: null,
   ebookFile: null,
+  localFile: null,
+  localBuffer: null,
+  localBlobUrl: null,
   currentLocation: '',
   progress: 0,
   currentPage: 1,
@@ -98,11 +146,37 @@ export const readerStore = {
   },
 
   openBook(item: LibraryItem) {
-    const ebookFile = item.media?.ebookFile || null;
+    // If ebookFile is not explicitly attached, synthesize one from libraryFiles or item info
+    let ebookFile = item.media?.ebookFile || null;
+    if (!ebookFile && (item.media as any)?.libraryFiles) {
+      const files: any[] = (item.media as any).libraryFiles || [];
+      const ebookItem = files.find(f => {
+        const ext = (f.metadata?.ext || f.ext || '').toLowerCase();
+        return ext === '.epub' || ext === '.pdf' || ext === 'epub' || ext === 'pdf';
+      });
+      if (ebookItem) {
+        ebookFile = {
+          ino: ebookItem.ino || item.id,
+          filename: ebookItem.metadata?.filename || `${item.media.metadata.title}.${ebookItem.metadata?.ext || 'epub'}`,
+          ext: ebookItem.metadata?.ext?.startsWith('.') ? ebookItem.metadata.ext : `.${ebookItem.metadata?.ext || 'epub'}`,
+          size: ebookItem.metadata?.size || 0,
+        };
+      }
+    }
+
+    // Default fallback if mediaType is book
+    if (!ebookFile && item.mediaType === 'book') {
+      ebookFile = {
+        ino: item.id,
+        filename: `${item.media.metadata.title}.epub`,
+        ext: '.epub',
+        size: 0,
+      };
+    }
+
     const initialProgress = item.userMediaProgress?.ebookProgress || 0;
     const initialLocation = item.userMediaProgress?.ebookLocation || '';
 
-    // Estimate initial page from progress or metadata
     const estimatedTotal = 280;
     const estimatedCurrent = Math.max(1, Math.round(initialProgress * estimatedTotal)) || 1;
 
@@ -111,6 +185,9 @@ export const readerStore = {
       isOpen: true,
       item,
       ebookFile,
+      localFile: null,
+      localBuffer: null,
+      localBlobUrl: null,
       currentLocation: initialLocation,
       progress: initialProgress,
       currentPage: estimatedCurrent,
@@ -118,7 +195,91 @@ export const readerStore = {
       currentChapterTitle: 'Chapter 1',
       totalChapters: item.media?.chapters?.length || 12,
       remainingChapters: Math.max(0, (item.media?.chapters?.length || 12) - 1),
-      estimatedMinutesLeft: Math.round((1 - initialProgress) * 340), // ~5.5 hours typical light novel
+      estimatedMinutesLeft: Math.round((1 - initialProgress) * 340),
+      showSidebar: true,
+      showToc: false,
+      showSettings: false,
+    };
+    notify();
+  },
+
+  async openLocalFile(file: File) {
+    const isPdf = file.name.toLowerCase().endsWith('.pdf');
+    const isEpub = file.name.toLowerCase().endsWith('.epub');
+
+    let title = file.name.replace(/\.(epub|pdf)$/i, '');
+    let author = 'Local Document';
+    let coverUrl: string | undefined = undefined;
+    let buffer: ArrayBuffer | null = null;
+    let localBlobUrl: string | null = null;
+
+    if (isPdf) {
+      localBlobUrl = URL.createObjectURL(file);
+    } else if (isEpub) {
+      buffer = await file.arrayBuffer();
+      try {
+        const parsed = await parseEpub(buffer);
+        if (parsed.title && parsed.title !== 'Untitled') {
+          title = parsed.title;
+        }
+        if (parsed.author && parsed.author !== 'Unknown Author') {
+          author = parsed.author;
+        }
+        if (parsed.coverDataUrl) {
+          coverUrl = parsed.coverDataUrl;
+        }
+      } catch (err) {
+        console.warn('EPUB quick inspection note:', err);
+      }
+    }
+
+    const localItem: LibraryItem = {
+      id: `local_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      libraryId: 'local_library',
+      mediaType: 'book',
+      media: {
+        metadata: {
+          title,
+          authorName: author,
+        },
+        ebookFile: {
+          ino: 'local',
+          filename: file.name,
+          ext: isPdf ? '.pdf' : '.epub',
+          size: file.size,
+        },
+      },
+    };
+
+    saveStoredLocalBook({
+      id: localItem.id,
+      isLocal: true,
+      title,
+      author,
+      format: isPdf ? 'pdf' : 'epub',
+      fileName: file.name,
+      fileSize: file.size,
+      lastOpened: Date.now(),
+      progress: 0,
+      coverDataUrl: coverUrl,
+    });
+
+    globalState = {
+      ...globalState,
+      isOpen: true,
+      item: localItem,
+      ebookFile: localItem.media.ebookFile || null,
+      localFile: file,
+      localBuffer: buffer,
+      localBlobUrl: localBlobUrl,
+      currentLocation: '',
+      progress: 0,
+      currentPage: 1,
+      totalPages: isPdf ? 1 : 100,
+      currentChapterTitle: isPdf ? 'Page 1' : 'Beginning',
+      totalChapters: 12,
+      remainingChapters: 11,
+      estimatedMinutesLeft: 240,
       showSidebar: true,
       showToc: false,
       showSettings: false,
@@ -127,14 +288,20 @@ export const readerStore = {
   },
 
   closeBook() {
-    // Perform final sync on close
     readerStore.syncCurrentProgress(true);
+
+    if (globalState.localBlobUrl) {
+      URL.revokeObjectURL(globalState.localBlobUrl);
+    }
 
     globalState = {
       ...globalState,
       isOpen: false,
       item: null,
       ebookFile: null,
+      localFile: null,
+      localBuffer: null,
+      localBlobUrl: null,
     };
     notify();
   },
@@ -257,6 +424,7 @@ export function useReader() {
   return {
     ...state,
     openBook: readerStore.openBook,
+    openLocalFile: readerStore.openLocalFile,
     closeBook: readerStore.closeBook,
     updateLocation: readerStore.updateLocation,
     setPreferences: readerStore.setPreferences,

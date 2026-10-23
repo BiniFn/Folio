@@ -1,5 +1,5 @@
-import React from 'react';
-import { X, Play, BookOpen, Clock, Calendar, User, FileText, CheckCircle2, Heart } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { X, Play, BookOpen, Clock, Calendar, User, FileText, CheckCircle2, Heart, Headphones, Sparkles } from 'lucide-react';
 import { LibraryItem } from '../../types/audiobookshelf';
 import { absClient } from '../../api/absClient';
 import { authStore } from '../../stores/authStore';
@@ -23,24 +23,67 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   if (!item) return null;
 
   const auth = authStore.getState();
-  const metadata = item.media?.metadata || {};
-  const hasAudio = !!(item.media?.duration || item.media?.numTracks || item.media?.audioFiles?.length);
-  const hasEbook = !!item.media?.ebookFile;
+  const [activeItem, setActiveItem] = useState<LibraryItem>(item);
+  const [coverError, setCoverError] = useState(false);
 
-  const audioProgress = item.userMediaProgress?.progress || 0;
-  const ebookProgress = item.userMediaProgress?.ebookProgress || 0;
+  // Load expanded item metadata in background
+  useEffect(() => {
+    setActiveItem(item);
+    setCoverError(false);
 
-  const coverUrl = auth.token
-    ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, item.id, 600, auth.useProxy)
+    if (auth.token && auth.serverUrl && item.id && !item.id.startsWith('local_')) {
+      absClient.getItem(auth.serverUrl, auth.token, item.id, auth.useProxy)
+        .then(expanded => {
+          if (expanded && expanded.id === item.id) {
+            setActiveItem(expanded);
+          }
+        })
+        .catch(err => {
+          console.warn('Failed to fetch expanded item details:', err);
+        });
+    }
+  }, [item.id]);
+
+  const metadata = activeItem.media?.metadata || {};
+  const hasAudio = !!(
+    activeItem.media?.duration || 
+    activeItem.media?.numTracks || 
+    activeItem.media?.tracks?.length || 
+    activeItem.media?.audioFiles?.length ||
+    (activeItem as any).numAudioFiles
+  );
+  
+  const hasEbook = !!(
+    activeItem.media?.ebookFile ||
+    activeItem.media?.ebookFormat ||
+    activeItem.mediaType === 'book' ||
+    (activeItem.media as any)?.libraryFiles?.some((f: any) => {
+      const ext = (f.metadata?.ext || f.ext || '').toLowerCase();
+      return ext === '.epub' || ext === '.pdf' || ext === 'epub' || ext === 'pdf';
+    })
+  );
+
+  const audioProgress = activeItem.userMediaProgress?.progress || 0;
+  const ebookProgress = activeItem.userMediaProgress?.ebookProgress || 0;
+
+  const coverUrl = auth.token && !item.id.startsWith('local_')
+    ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, activeItem.id, 600, auth.useProxy)
     : '';
 
   const handleStartListening = () => {
-    playerStore.loadAndPlay(item);
+    playerStore.loadAndPlay(activeItem);
     onClose();
   };
 
   const handleStartReading = () => {
-    readerStore.openBook(item);
+    readerStore.openBook(activeItem);
+    onClose();
+  };
+
+  const handleReadAndListenTogether = () => {
+    // Simultaneous reading and listening!
+    playerStore.loadAndPlay(activeItem);
+    readerStore.openBook(activeItem);
     onClose();
   };
 
@@ -58,25 +101,44 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
         {/* Left Column: Cover & Quick Actions */}
         <div className="w-full md:w-72 bg-[#13161a] p-6 flex flex-col items-center border-b md:border-b-0 md:border-r border-[#232830]">
           <div className="w-48 aspect-[2/3] rounded-xl overflow-hidden shadow-2xl bg-neutral-900 border border-neutral-800 relative mb-6">
-            {coverUrl ? (
+            {coverUrl && !coverError ? (
               <img
                 src={coverUrl}
                 alt={metadata.title}
+                onError={() => setCoverError(true)}
                 className="w-full h-full object-cover"
               />
             ) : (
-              <div className="w-full h-full flex items-center justify-center bg-stone-800 text-stone-400">
-                <BookOpen className="w-12 h-12" />
+              <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-gradient-to-b from-stone-800 to-neutral-900 text-stone-300">
+                <BookOpen className="w-12 h-12 text-teal-400/80 mb-2" />
+                <span className="font-serif font-bold text-sm line-clamp-3 text-white">{metadata.title}</span>
+                <span className="text-[11px] text-stone-400 mt-1 line-clamp-1">{metadata.authorName}</span>
               </div>
             )}
           </div>
 
           {/* Action Buttons */}
           <div className="w-full flex flex-col gap-2.5">
+            {/* Read & Listen Together (if both available) */}
+            {hasAudio && hasEbook && (
+              <button
+                onClick={handleReadAndListenTogether}
+                className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-medium bg-gradient-to-r from-teal-500 to-emerald-400 hover:from-teal-400 hover:to-emerald-300 text-black transition-all shadow-lg shadow-teal-500/25 active:scale-[0.98]"
+                title="Open ebook reader and start audiobook playback together"
+              >
+                <Headphones className="w-4 h-4 fill-current ml-0.5" />
+                <span>Read & Listen Together</span>
+              </button>
+            )}
+
             {hasAudio && (
               <button
                 onClick={handleStartListening}
-                className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-medium bg-teal-500 hover:bg-teal-400 text-black transition-colors shadow-lg shadow-teal-500/20 active:scale-[0.98]"
+                className={`w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-medium transition-colors active:scale-[0.98] ${
+                  hasAudio && hasEbook 
+                    ? 'bg-[#232830] hover:bg-[#2e3540] text-neutral-100 border border-neutral-700/60'
+                    : 'bg-teal-500 hover:bg-teal-400 text-black shadow-lg shadow-teal-500/20'
+                }`}
               >
                 <Play className="w-4 h-4 fill-current ml-0.5" />
                 {audioProgress > 0 ? 'Resume Audiobook' : 'Play Audiobook'}
@@ -86,7 +148,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
             {hasEbook && (
               <button
                 onClick={handleStartReading}
-                className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-medium bg-[#232830] hover:bg-[#2e3540] text-neutral-100 border border-neutral-700/60 transition-colors active:scale-[0.98]"
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl font-medium bg-[#232830] hover:bg-[#2e3540] text-neutral-100 border border-neutral-700/60 transition-colors active:scale-[0.98]"
               >
                 <BookOpen className="w-4 h-4 text-amber-400" />
                 {ebookProgress > 0 ? 'Continue Reading' : 'Read Ebook'}
@@ -95,8 +157,8 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
 
             {onToggleFavorite && (
               <button
-                onClick={() => onToggleFavorite(item.id)}
-                className={`w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-medium border transition-colors ${
+                onClick={() => onToggleFavorite(activeItem.id)}
+                className={`w-full flex items-center justify-center gap-2 py-2 px-4 rounded-xl text-xs font-medium border transition-colors ${
                   isFavorite
                     ? 'border-red-500/50 bg-red-500/10 text-red-400'
                     : 'border-neutral-800 hover:bg-neutral-800 text-stone-400 hover:text-stone-200'

@@ -179,18 +179,106 @@ async function unzipArchive(buffer: ArrayBuffer): Promise<Map<string, Uint8Array
   const map = new Map<string, Uint8Array>();
   const view = new DataView(buffer);
   const bytes = new Uint8Array(buffer);
-  let offset = 0;
 
-  while (offset + 30 <= buffer.byteLength) {
-    const signature = view.getUint32(offset, true);
-    if (signature !== 0x04034b50) {
-      // Central directory or end
+  // Helper to decompress a chunk
+  async function decompressChunk(compressedData: Uint8Array, method: number): Promise<Uint8Array | null> {
+    if (method === 0) {
+      return compressedData;
+    }
+    if (method === 8) {
+      try {
+        const ds = new DecompressionStream('deflate-raw');
+        const writer = ds.writable.getWriter();
+        writer.write(compressedData);
+        writer.close();
+
+        const reader = ds.readable.getReader();
+        const chunks: Uint8Array[] = [];
+        let totalLen = 0;
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            totalLen += value.length;
+          }
+        }
+
+        const decompressed = new Uint8Array(totalLen);
+        let cur = 0;
+        for (const chunk of chunks) {
+          decompressed.set(chunk, cur);
+          cur += chunk.length;
+        }
+        return decompressed;
+      } catch (err) {
+        console.warn('Decompression failed for entry:', err);
+        return null;
+      }
+    }
+    return null;
+  }
+
+  // 1. Try reading Central Directory (Standard robust ZIP reading)
+  let eocdOffset = -1;
+  const maxSearch = Math.min(buffer.byteLength, 65557);
+  for (let i = buffer.byteLength - 22; i >= buffer.byteLength - maxSearch; i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocdOffset = i;
       break;
     }
+  }
+
+  if (eocdOffset !== -1) {
+    const totalEntries = view.getUint16(eocdOffset + 10, true);
+    const cdOffset = view.getUint32(eocdOffset + 16, true);
+    let cdPos = cdOffset;
+
+    for (let i = 0; i < totalEntries && cdPos + 46 <= buffer.byteLength; i++) {
+      if (view.getUint32(cdPos, true) !== 0x02014b50) break;
+
+      const compressionMethod = view.getUint16(cdPos + 10, true);
+      const compressedSize = view.getUint32(cdPos + 20, true);
+      const fileNameLength = view.getUint16(cdPos + 28, true);
+      const extraLength = view.getUint16(cdPos + 30, true);
+      const commentLength = view.getUint16(cdPos + 32, true);
+      const localHeaderOffset = view.getUint32(cdPos + 42, true);
+
+      const fileNameBytes = bytes.subarray(cdPos + 46, cdPos + 46 + fileNameLength);
+      const fileName = new TextDecoder('utf-8').decode(fileNameBytes);
+
+      if (localHeaderOffset + 30 <= buffer.byteLength && view.getUint32(localHeaderOffset, true) === 0x04034b50) {
+        const localFileNameLength = view.getUint16(localHeaderOffset + 26, true);
+        const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
+        const dataStart = localHeaderOffset + 30 + localFileNameLength + localExtraLength;
+        const dataEnd = dataStart + compressedSize;
+
+        if (dataEnd <= buffer.byteLength) {
+          const raw = bytes.subarray(dataStart, dataEnd);
+          const decompressed = await decompressChunk(raw, compressionMethod);
+          if (decompressed) {
+            map.set(fileName, decompressed);
+          }
+        }
+      }
+
+      cdPos += 46 + fileNameLength + extraLength + commentLength;
+    }
+
+    if (map.size > 0) {
+      return map;
+    }
+  }
+
+  // 2. Fallback to Local Headers scanning if Central Directory was not parsed
+  let offset = 0;
+  while (offset + 30 <= buffer.byteLength) {
+    const signature = view.getUint32(offset, true);
+    if (signature !== 0x04034b50) break;
 
     const compressionMethod = view.getUint16(offset + 8, true);
     const compressedSize = view.getUint32(offset + 18, true);
-    const uncompressedSize = view.getUint32(offset + 22, true);
     const fileNameLength = view.getUint16(offset + 26, true);
     const extraFieldLength = view.getUint16(offset + 28, true);
 
@@ -200,47 +288,16 @@ async function unzipArchive(buffer: ArrayBuffer): Promise<Map<string, Uint8Array
     const dataStart = offset + 30 + fileNameLength + extraFieldLength;
     const dataEnd = dataStart + compressedSize;
 
-    if (dataEnd <= buffer.byteLength) {
-      const compressedData = bytes.subarray(dataStart, dataEnd);
-
-      if (compressionMethod === 0) {
-        // Stored / uncompressed
-        map.set(fileName, compressedData);
-      } else if (compressionMethod === 8) {
-        // Deflate
-        try {
-          const ds = new DecompressionStream('deflate-raw');
-          const writer = ds.writable.getWriter();
-          writer.write(compressedData);
-          writer.close();
-
-          const reader = ds.readable.getReader();
-          const chunks: Uint8Array[] = [];
-          let totalLen = 0;
-
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            if (value) {
-              chunks.push(value);
-              totalLen += value.length;
-            }
-          }
-
-          const decompressed = new Uint8Array(totalLen);
-          let cur = 0;
-          for (const chunk of chunks) {
-            decompressed.set(chunk, cur);
-            cur += chunk.length;
-          }
-          map.set(fileName, decompressed);
-        } catch (err) {
-          console.warn(`Could not decompress file ${fileName}:`, err);
-        }
+    if (dataEnd <= buffer.byteLength && compressedSize > 0) {
+      const raw = bytes.subarray(dataStart, dataEnd);
+      const decompressed = await decompressChunk(raw, compressionMethod);
+      if (decompressed) {
+        map.set(fileName, decompressed);
       }
+      offset = dataEnd;
+    } else {
+      offset += 30 + fileNameLength + extraFieldLength;
     }
-
-    offset = dataEnd;
   }
 
   return map;

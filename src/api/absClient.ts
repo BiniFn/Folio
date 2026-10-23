@@ -15,26 +15,47 @@ export interface AbsRequestOptions {
 }
 
 class AbsClient {
-  private formatUrl(serverUrl: string, endpoint: string, token?: string, useProxy: boolean = false): string {
+  public formatUrl(
+    serverUrl: string, 
+    endpoint: string, 
+    tokenOrOptions?: string | boolean | { token?: string; useProxy?: boolean }, 
+    useProxyParam: boolean = false
+  ): string {
     const cleanBase = normalizeUrl(serverUrl);
-    let cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+    let token: string | undefined;
+    let useProxy: boolean = false;
+
+    if (typeof tokenOrOptions === 'object' && tokenOrOptions !== null) {
+      token = tokenOrOptions.token;
+      useProxy = !!tokenOrOptions.useProxy;
+    } else if (typeof tokenOrOptions === 'string') {
+      token = tokenOrOptions;
+      useProxy = useProxyParam;
+    } else if (typeof tokenOrOptions === 'boolean') {
+      useProxy = tokenOrOptions;
+    }
+
+    // Split endpoint into path and existing query params
+    const [pathPart, queryPart] = endpoint.split('?');
+    const cleanPath = pathPart.startsWith('/') ? pathPart : `/${pathPart}`;
+    const params = new URLSearchParams(queryPart || '');
+
+    if (token && !params.has('token')) {
+      params.set('token', token.trim());
+    }
 
     if (useProxy) {
       const proxyUrl = new URL('/api/proxy', window.location.origin);
       proxyUrl.searchParams.set('target', cleanBase);
-      proxyUrl.searchParams.set('path', cleanEndpoint);
-      if (token) {
-        proxyUrl.searchParams.set('token', token);
-      }
+      proxyUrl.searchParams.set('path', cleanPath);
+      params.forEach((val, key) => {
+        proxyUrl.searchParams.set(key, val);
+      });
       return proxyUrl.toString();
     }
 
-    if (token && !cleanEndpoint.includes('token=')) {
-      const sep = cleanEndpoint.includes('?') ? '&' : '?';
-      cleanEndpoint = `${cleanEndpoint}${sep}token=${encodeURIComponent(token)}`;
-    }
-
-    return `${cleanBase}${cleanEndpoint}`;
+    const queryString = params.toString();
+    return `${cleanBase}${cleanPath}${queryString ? `?${queryString}` : ''}`;
   }
 
   private async request<T>(
@@ -121,7 +142,7 @@ class AbsClient {
    */
   async pingServer(serverUrl: string, useProxy: boolean = false): Promise<boolean> {
     try {
-      const url = this.formatUrl(serverUrl, '/ping', useProxy);
+      const url = this.formatUrl(serverUrl, '/ping', { useProxy });
       const res = await fetch(url, {
         headers: useProxy ? { 'x-abs-target': normalizeUrl(serverUrl) } : {},
       });
@@ -268,8 +289,8 @@ class AbsClient {
    * Get item cover URL with token
    */
   getItemCoverUrl(serverUrl: string, token: string, itemId: string, width?: number, useProxy: boolean = false): string {
-    const endpoint = `/api/items/${itemId}/cover?token=${encodeURIComponent(token)}${width ? `&width=${width}` : ''}`;
-    return this.formatUrl(serverUrl, endpoint, useProxy);
+    const endpoint = `/api/items/${itemId}/cover${width ? `?width=${width}` : ''}`;
+    return this.formatUrl(serverUrl, endpoint, { token, useProxy });
   }
 
   /**
@@ -379,16 +400,16 @@ class AbsClient {
    * Build stream URL for audio files
    */
   getAudioFileStreamUrl(serverUrl: string, token: string, itemId: string, ino: string, useProxy: boolean = false): string {
-    const endpoint = `/api/items/${itemId}/file/${ino}?token=${encodeURIComponent(token)}`;
-    return this.formatUrl(serverUrl, endpoint, useProxy);
+    const endpoint = `/api/items/${itemId}/file/${ino}`;
+    return this.formatUrl(serverUrl, endpoint, { token, useProxy });
   }
 
   /**
    * Build download/stream URL for ebook files
    */
-  getEbookFileUrl(serverUrl: string, token: string, itemId: string, ino: string, useProxy: boolean = false): string {
-    const endpoint = `/api/items/${itemId}/file/${ino}?token=${encodeURIComponent(token)}`;
-    return this.formatUrl(serverUrl, endpoint, useProxy);
+  getEbookFileUrl(serverUrl: string, token: string, itemId: string, ino?: string, useProxy: boolean = false): string {
+    const endpoint = ino ? `/api/items/${itemId}/file/${ino}` : `/api/items/${itemId}/ebook`;
+    return this.formatUrl(serverUrl, endpoint, { token, useProxy });
   }
 
   /**
@@ -398,7 +419,7 @@ class AbsClient {
     serverUrl: string,
     token: string,
     itemId: string,
-    ino: string,
+    ino?: string,
     useProxy: boolean = false
   ): Promise<ArrayBuffer> {
     const url = this.getEbookFileUrl(serverUrl, token, itemId, ino, useProxy);
@@ -409,9 +430,15 @@ class AbsClient {
       headers['x-abs-target'] = normalizeUrl(serverUrl);
     }
 
-    const response = await fetch(url, { headers });
+    let response = await fetch(url, { headers });
+    // If specific file ino failed, fallback to generic /api/items/${itemId}/ebook endpoint
+    if (!response.ok && ino) {
+      const fallbackUrl = this.getEbookFileUrl(serverUrl, token, itemId, undefined, useProxy);
+      response = await fetch(fallbackUrl, { headers });
+    }
+
     if (!response.ok) {
-      throw new Error(`Failed to download ebook file: ${response.statusText}`);
+      throw new Error(`Failed to download ebook file (${response.status}): ${response.statusText}`);
     }
     return response.arrayBuffer();
   }
