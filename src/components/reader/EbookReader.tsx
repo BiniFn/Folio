@@ -107,12 +107,16 @@ export const EbookReader: React.FC = () => {
       try {
         // 1. Local PDF
         if (isPdf) {
-          if (localBuffer) {
+          if (localBuffer && localBuffer.byteLength > 0 && !(localBuffer as any).detached) {
             setPdfBuffer(localBuffer);
           } else if (localFile) {
-            const buf = await localFile.arrayBuffer();
-            if (isCancelled) return;
-            setPdfBuffer(buf);
+            try {
+              const buf = await localFile.arrayBuffer();
+              if (isCancelled) return;
+              setPdfBuffer(buf);
+            } catch (err) {
+              console.warn('Re-reading local file buffer note:', err);
+            }
           }
           if (localBlobUrl) {
             setActivePdfUrl(localBlobUrl);
@@ -578,8 +582,8 @@ export const EbookReader: React.FC = () => {
           ) : isPdf ? (
             /* MangaDex Page-by-Page PDF Reader */
             <PdfPageReader
-              buffer={pdfBuffer || localBuffer}
-              url={activePdfUrl || localBlobUrl}
+              url={localBlobUrl || activePdfUrl}
+              buffer={pdfBuffer && pdfBuffer.byteLength > 0 ? pdfBuffer : null}
               initialPage={currentPage || 1}
               title={metadata.title || localFile?.name || 'Document'}
               onPageChange={(page, total) => {

@@ -219,8 +219,11 @@ export const readerStore = {
     if (isPdf) {
       localBlobUrl = URL.createObjectURL(file);
       try {
-        buffer = await file.arrayBuffer();
-        coverUrl = await extractPdfCover(buffer);
+        const rawBuffer = await file.arrayBuffer();
+        coverUrl = await extractPdfCover(rawBuffer.slice(0));
+        if (rawBuffer.byteLength > 0) {
+          buffer = rawBuffer;
+        }
       } catch (err) {
         console.warn('PDF inspection failed:', err);
       }

@@ -78,14 +78,21 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
           pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
         }
 
-        const sourceParam = buffer
-          ? { data: new Uint8Array(buffer) }
-          : url
-          ? { url }
-          : null;
+        let sourceParam: any = null;
+
+        // Prefer URL / Blob URL first because browser blob URLs never detach!
+        if (url) {
+          sourceParam = { url };
+        } else if (buffer && buffer.byteLength > 0 && !(buffer as any).detached) {
+          try {
+            sourceParam = { data: new Uint8Array(buffer.slice(0)) };
+          } catch {
+            if (url) sourceParam = { url };
+          }
+        }
 
         if (!sourceParam) {
-          throw new Error('No PDF source provided');
+          throw new Error('No PDF source provided or buffer was detached');
         }
 
         const loadingTask = pdfjs.getDocument({

@@ -4,6 +4,10 @@
  */
 export async function extractPdfCover(buffer: ArrayBuffer): Promise<string | null> {
   try {
+    if (!buffer || buffer.byteLength === 0 || (buffer as any).detached) {
+      return null;
+    }
+
     const pdfjs = (window as any).pdfjsLib;
     if (!pdfjs) return null;
 
@@ -11,8 +15,10 @@ export async function extractPdfCover(buffer: ArrayBuffer): Promise<string | nul
       pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     }
 
+    // Always clone with slice(0) so the main buffer is never detached by worker transfer
+    const cloned = buffer.slice(0);
     const loadingTask = pdfjs.getDocument({
-      data: new Uint8Array(buffer),
+      data: new Uint8Array(cloned),
       cMapUrl: 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/cmaps/',
       cMapPacked: true,
     });
