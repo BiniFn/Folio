@@ -57,11 +57,13 @@ export const AudiobookPlayer: React.FC = () => {
 
   const auth = authStore.getState();
   const metadata = item.media?.metadata || {};
-  const coverUrl = auth.token && !item.id.startsWith('local_')
+  const localCover = (item as any)?.media?.coverPath || (item as any)?.coverDataUrl;
+  const serverCover = auth.token && auth.serverUrl && !item.id.startsWith('local_')
     ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, item.id, 600, auth.useProxy)
     : '';
+  const coverUrl = localCover || serverCover || '';
 
-  const speedOptions = [0.75, 1.0, 1.2, 1.25, 1.5, 1.75, 2.0, 2.5];
+  const speedOptions = [0.75, 1.0, 1.2, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0];
   const sleepOptions = [
     { label: 'Off', value: null },
     { label: '5 minutes', value: 5 },

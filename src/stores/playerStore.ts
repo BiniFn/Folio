@@ -329,7 +329,7 @@ export const playerStore = {
   },
 
   setPlaybackRate(rate: number) {
-    const clamped = Math.min(3.0, Math.max(0.5, rate));
+    const clamped = Math.min(4.0, Math.max(0.5, rate));
     const audioElement = getAudio();
     audioElement.playbackRate = clamped;
     globalState = { ...globalState, playbackRate: clamped };

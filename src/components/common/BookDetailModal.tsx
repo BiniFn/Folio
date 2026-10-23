@@ -67,9 +67,11 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   const audioProgress = currentItem.userMediaProgress?.progress || 0;
   const ebookProgress = currentItem.userMediaProgress?.ebookProgress || 0;
 
-  const coverUrl = auth.token && !item.id.startsWith('local_')
+  const localCover = (currentItem as any)?.media?.coverPath || (currentItem as any)?.coverDataUrl;
+  const serverCover = auth.token && !currentItem.id.startsWith('local_')
     ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, currentItem.id, 600, auth.useProxy)
     : '';
+  const coverUrl = localCover || serverCover || '';
 
   const handleStartListening = () => {
     playerStore.loadAndPlay(currentItem);

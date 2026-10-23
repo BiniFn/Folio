@@ -7,8 +7,10 @@ import {
   ChevronRight, 
   Settings2, 
   List, 
-  Maximize, 
-  Minimize, 
+  Maximize2, 
+  Minimize2, 
+  PanelRightClose,
+  PanelRightOpen,
   ZoomIn, 
   ZoomOut,
   BookOpen,
@@ -54,6 +56,7 @@ export const EbookReader: React.FC = () => {
     setFontFamily,
     setFontSize,
     setLineHeight,
+    setMaxWidth,
     toggleSidebar,
     toggleToc,
     toggleSettings,
@@ -69,6 +72,9 @@ export const EbookReader: React.FC = () => {
   const [pdfZoom, setPdfZoom] = useState(100);
   const [activePdfUrl, setActivePdfUrl] = useState<string | null>(null);
   const [showAudioCompanion, setShowAudioCompanion] = useState(true);
+  const [showPdfBrowserToolbar, setShowPdfBrowserToolbar] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [coverSrc, setCoverSrc] = useState<string>('');
 
   const contentRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -176,12 +182,65 @@ export const EbookReader: React.FC = () => {
     };
   }, [isOpen, item?.id, ebookFile?.ino, localBlobUrl, localBuffer, isPdf]);
 
+  // Fullscreen event listener
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
+
+  // Keyboard navigation shortcuts
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === 'f' || e.key === 'F') {
+        toggleFullscreen();
+      } else if (e.key === 's' || e.key === 'S') {
+        toggleSidebar();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen]);
+
+  // Cover Resolution & Fallback to player artwork
+  useEffect(() => {
+    if (!item) {
+      setCoverSrc('');
+      return;
+    }
+    const auth = authStore.getState();
+    const localCover = (item as any)?.media?.coverPath || (item as any)?.coverDataUrl;
+    const serverCover = auth.token && auth.serverUrl && !item.id.startsWith('local_')
+      ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, item.id, 600, auth.useProxy)
+      : '';
+    const playerCover = player.item
+      ? ((player.item as any)?.media?.coverPath || (auth.token && auth.serverUrl && !player.item.id.startsWith('local_') ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, player.item.id, 600, auth.useProxy) : ''))
+      : '';
+
+    setCoverSrc(localCover || serverCover || playerCover || '');
+  }, [item?.id, (item as any)?.media?.coverPath, player.item?.id]);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  };
+
   if (!isOpen || !item) return null;
 
   const auth = authStore.getState();
   const metadata = item.media?.metadata || {};
-  const coverUrl = auth.token && !item.id.startsWith('local_')
-    ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, item.id, 600, auth.useProxy)
+
+  const playerCover = player.item
+    ? ((player.item as any)?.media?.coverPath || (auth.token && auth.serverUrl && !player.item.id.startsWith('local_') ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, player.item.id, 600, auth.useProxy) : ''))
     : '';
 
   // Check if this book or any book has audio
@@ -248,11 +307,9 @@ export const EbookReader: React.FC = () => {
 
   const handleToggleAudio = () => {
     if (player.item) {
-      // Toggle play/pause if audio already loaded
       player.togglePlay();
       setShowAudioCompanion(true);
     } else if (hasAudioCompanion) {
-      // Start playing this book's audiobook
       playerStore.loadAndPlay(item);
       setShowAudioCompanion(true);
     }
@@ -280,8 +337,8 @@ export const EbookReader: React.FC = () => {
       case 'dark':
       default:
         return {
-          canvas: 'bg-[#ffffff] text-[#1f2428]',
-          pageBorder: 'border-neutral-300/40 shadow-2xl',
+          canvas: 'bg-[#181c21] text-[#f0f3f6]',
+          pageBorder: 'border-neutral-800 shadow-2xl',
         };
     }
   };
@@ -291,10 +348,12 @@ export const EbookReader: React.FC = () => {
   const formatLeftMins = estimatedMinutesLeft % 60;
 
   const currentChapter = parsedEpub?.chapters[activeChapterIndex];
-  const activeTitle = currentChapter?.title || currentChapterTitle || 'Chapter 6: On the Road';
+  const activeTitle = currentChapter?.title || currentChapterTitle || metadata.title || 'Reader';
+
+  const speedOptions = [0.75, 1.0, 1.2, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0];
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#12161a] flex overflow-hidden animate-fade-in font-sans select-text">
+    <div className="fixed inset-0 z-50 bg-[#0f1216] flex overflow-hidden animate-fade-in font-sans select-text">
       {/* Hidden local file input */}
       <input
         type="file"
@@ -304,34 +363,31 @@ export const EbookReader: React.FC = () => {
         className="hidden"
       />
 
-      {/* Subtle Botanical Leaf Watermark on bottom-left */}
-      <div 
-        className="pointer-events-none absolute bottom-0 left-0 w-64 h-64 opacity-[0.08] text-stone-200"
-        style={{
-          backgroundImage: `radial-gradient(circle at bottom left, rgba(255,255,255,0.15) 0%, transparent 70%)`
-        }}
-      >
-        <svg viewBox="0 0 100 100" className="w-full h-full fill-current">
-          <path d="M10 90 Q30 50 20 20 Q50 30 90 10 Q50 50 60 80 Z" />
-        </svg>
-      </div>
-
-      {/* LEFT TOOLBAR: Minimalist navigation & Theme toggle */}
-      <div className="w-14 bg-transparent flex flex-col items-center justify-between py-6 shrink-0 z-20">
+      {/* LEFT TOOLBAR: Minimalist navigation & tools */}
+      <div className="w-14 bg-[#12161a] border-r border-[#232830] flex flex-col items-center justify-between py-5 shrink-0 z-20">
         {/* Top Controls */}
-        <div className="flex flex-col items-center gap-4">
+        <div className="flex flex-col items-center gap-3.5">
           <button
             onClick={closeBook}
-            className="p-2 rounded-full hover:bg-neutral-800/80 text-stone-400 hover:text-stone-100 transition-colors"
+            className="p-2 rounded-xl hover:bg-neutral-800 text-stone-400 hover:text-stone-100 transition-colors"
             title="Return to library"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
 
+          {/* Fullscreen Button */}
+          <button
+            onClick={toggleFullscreen}
+            className="p-2 rounded-xl hover:bg-neutral-800 text-stone-400 hover:text-stone-100 transition-colors"
+            title={isFullscreen ? 'Exit Fullscreen (F)' : 'Enter Fullscreen (F)'}
+          >
+            {isFullscreen ? <Minimize2 className="w-5 h-5 text-teal-400" /> : <Maximize2 className="w-5 h-5" />}
+          </button>
+
           {/* Audio Companion Toggle (Simultaneous Reading & Listening) */}
           <button
             onClick={handleToggleAudio}
-            className={`p-2 rounded-full transition-all relative ${
+            className={`p-2 rounded-xl transition-all relative ${
               player.item && player.isPlaying
                 ? 'bg-teal-500 text-black shadow-lg shadow-teal-500/30'
                 : player.item
@@ -351,7 +407,7 @@ export const EbookReader: React.FC = () => {
           {/* Open Local Ebook Button */}
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="p-2 rounded-full hover:bg-neutral-800/80 text-stone-400 hover:text-stone-100 transition-colors"
+            className="p-2 rounded-xl hover:bg-neutral-800 text-stone-400 hover:text-stone-100 transition-colors"
             title="Open local EPUB or PDF"
           >
             <FolderOpen className="w-5 h-5" />
@@ -359,7 +415,7 @@ export const EbookReader: React.FC = () => {
 
           <button
             onClick={toggleTheme}
-            className="p-2 rounded-full hover:bg-neutral-800/80 text-stone-400 hover:text-stone-100 transition-colors"
+            className="p-2 rounded-xl hover:bg-neutral-800 text-stone-400 hover:text-stone-100 transition-colors"
             title="Toggle theme"
           >
             {preferences.theme === 'light' ? <Sun className="w-5 h-5 text-amber-400" /> : <Moon className="w-5 h-5" />}
@@ -367,8 +423,8 @@ export const EbookReader: React.FC = () => {
 
           <button
             onClick={toggleSettings}
-            className="p-2 rounded-full hover:bg-neutral-800/80 text-stone-400 hover:text-stone-100 transition-colors"
-            title="Typography & font settings"
+            className={`p-2 rounded-xl hover:bg-neutral-800 transition-colors ${showSettings ? 'text-teal-400 bg-neutral-800' : 'text-stone-400 hover:text-stone-100'}`}
+            title="Reader view & typography settings"
           >
             <Settings2 className="w-5 h-5" />
           </button>
@@ -376,7 +432,7 @@ export const EbookReader: React.FC = () => {
           {tableOfContents.length > 0 && (
             <button
               onClick={toggleToc}
-              className="p-2 rounded-full hover:bg-neutral-800/80 text-stone-400 hover:text-stone-100 transition-colors"
+              className={`p-2 rounded-xl hover:bg-neutral-800 transition-colors ${showToc ? 'text-teal-400 bg-neutral-800' : 'text-stone-400 hover:text-stone-100'}`}
               title="Table of contents"
             >
               <List className="w-5 h-5" />
@@ -385,7 +441,7 @@ export const EbookReader: React.FC = () => {
         </div>
 
         {/* Vertical Teal Progress Indicator Bar */}
-        <div className="w-1 h-32 bg-neutral-800 rounded-full overflow-hidden relative my-auto">
+        <div className="w-1 h-28 bg-neutral-800 rounded-full overflow-hidden relative my-auto">
           <div
             className="w-full bg-teal-400 rounded-full transition-all duration-300"
             style={{ height: `${Math.min(100, Math.max(3, progress * 100))}%` }}
@@ -395,18 +451,18 @@ export const EbookReader: React.FC = () => {
         {/* Bottom Toggle Sidebar */}
         <button
           onClick={toggleSidebar}
-          className="p-2 rounded-full hover:bg-neutral-800/80 text-stone-400 hover:text-stone-100 transition-colors"
-          title={showSidebar ? 'Hide reading progress sidebar' : 'Show reading progress sidebar'}
+          className={`p-2 rounded-xl hover:bg-neutral-800 transition-colors ${showSidebar ? 'text-teal-400' : 'text-stone-400 hover:text-stone-100'}`}
+          title={showSidebar ? 'Hide sidebar (S)' : 'Show sidebar (S)'}
         >
-          {showSidebar ? <Minimize className="w-4 h-4" /> : <Maximize className="w-4 h-4" />}
+          {showSidebar ? <PanelRightClose className="w-5 h-5" /> : <PanelRightOpen className="w-5 h-5" />}
         </button>
       </div>
 
       {/* CENTER: Reading Canvas */}
-      <div className="flex-1 flex flex-col items-center justify-between p-4 md:py-6 md:px-6 overflow-hidden relative">
+      <div className="flex-1 flex flex-col items-center justify-between p-2 md:p-4 overflow-hidden relative">
         {/* Floating Settings Bar (if open) */}
         {showSettings && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 bg-[#181c21] border border-[#232830] rounded-2xl shadow-2xl p-4 flex items-center gap-6 animate-fade-in text-xs text-stone-300">
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40 bg-[#181c21] border border-[#232830] rounded-2xl shadow-2xl p-4 flex flex-wrap items-center gap-5 animate-fade-in text-xs text-stone-300">
             {/* Font Family */}
             <div className="flex items-center gap-2">
               <span className="text-stone-400">Font:</span>
@@ -443,6 +499,28 @@ export const EbookReader: React.FC = () => {
               </button>
             </div>
 
+            {/* Reader Width */}
+            <div className="flex items-center gap-2">
+              <span className="text-stone-400">Width:</span>
+              <div className="flex bg-neutral-900 rounded-lg p-0.5 border border-neutral-800">
+                {[
+                  { label: 'Normal', value: 760 },
+                  { label: 'Wide', value: 1040 },
+                  { label: 'Full', value: 9999 },
+                ].map(w => (
+                  <button
+                    key={w.value}
+                    onClick={() => setMaxWidth(w.value)}
+                    className={`px-2 py-1 rounded text-[11px] ${
+                      preferences.maxWidth === w.value ? 'bg-teal-500 text-black font-semibold' : 'text-stone-400 hover:text-white'
+                    }`}
+                  >
+                    {w.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Themes */}
             <div className="flex items-center gap-2">
               <span className="text-stone-400">Theme:</span>
@@ -465,19 +543,25 @@ export const EbookReader: React.FC = () => {
 
             <button
               onClick={toggleSettings}
-              className="text-stone-400 hover:text-white ml-2"
+              className="text-stone-400 hover:text-white ml-1"
             >
               ✕
             </button>
           </div>
         )}
 
-        {/* Reading Page Column */}
+        {/* Reading Page Canvas */}
         <div 
           ref={contentRef}
           onScroll={handleScroll}
-          style={{ maxWidth: `${preferences.maxWidth}px` }}
-          className={`w-full flex-1 rounded-2xl ${themeStyle.canvas} ${themeStyle.pageBorder} border overflow-y-auto px-6 md:px-14 py-8 transition-colors shadow-2xl relative flex flex-col`}
+          style={{
+            maxWidth: isPdf ? '100%' : preferences.maxWidth >= 9999 ? '100%' : `${preferences.maxWidth}px`
+          }}
+          className={`w-full flex-1 ${
+            isPdf 
+              ? 'p-0 m-0 rounded-2xl overflow-hidden bg-neutral-900 border border-neutral-800 shadow-2xl relative flex flex-col' 
+              : `${themeStyle.canvas} ${themeStyle.pageBorder} rounded-2xl border overflow-y-auto px-6 md:px-14 py-8 transition-colors shadow-2xl relative flex flex-col`
+          }`}
         >
           {isLoading ? (
             <div className="flex-1 flex flex-col items-center justify-center text-stone-400 gap-3">
@@ -485,24 +569,44 @@ export const EbookReader: React.FC = () => {
               <span className="text-sm">Preparing book text...</span>
             </div>
           ) : isPdf && activePdfUrl ? (
-            /* PDF Native Frame */
+            /* PDF Full Bleed Native Frame */
             <div className="flex-1 flex flex-col w-full h-full min-h-[500px]">
-              <div className="flex justify-between items-center pb-2 mb-2 border-b border-stone-300/60 text-xs text-stone-500">
-                <span className="truncate max-w-md font-medium text-stone-700">PDF: {metadata.title}</span>
+              {/* PDF Top Bar */}
+              <div className="flex justify-between items-center px-4 py-2.5 bg-[#14181d]/95 backdrop-blur-md border-b border-neutral-800 text-xs text-stone-300 shrink-0">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="truncate max-w-sm md:max-w-md font-medium text-stone-200">
+                    {metadata.title || localFile?.name || 'Document'}
+                  </span>
+                  <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-teal-500/10 text-teal-400 border border-teal-500/20">
+                    PDF
+                  </span>
+                </div>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => setPdfZoom(Math.max(50, pdfZoom - 15))} className="p-1 hover:text-black">
-                    <ZoomOut className="w-3.5 h-3.5" />
+                  <button
+                    onClick={() => setShowPdfBrowserToolbar(!showPdfBrowserToolbar)}
+                    className={`px-2.5 py-1 rounded text-[11px] transition-colors border ${
+                      showPdfBrowserToolbar 
+                        ? 'bg-teal-500/20 text-teal-300 border-teal-500/40' 
+                        : 'bg-neutral-800/80 hover:bg-neutral-700 text-stone-300 border-neutral-700'
+                    }`}
+                    title="Toggle native browser PDF print, search & page controls"
+                  >
+                    {showPdfBrowserToolbar ? 'Clean View' : 'PDF Tools'}
                   </button>
-                  <span className="font-mono">{pdfZoom}%</span>
-                  <button onClick={() => setPdfZoom(Math.min(200, pdfZoom + 15))} className="p-1 hover:text-black">
-                    <ZoomIn className="w-3.5 h-3.5" />
+                  <button
+                    onClick={toggleFullscreen}
+                    className="p-1.5 rounded bg-neutral-800/80 hover:bg-neutral-700 text-stone-300 hover:text-white transition-colors"
+                    title={isFullscreen ? 'Exit Fullscreen (F)' : 'Fullscreen (F)'}
+                  >
+                    {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
                   </button>
                 </div>
               </div>
               <iframe
-                src={`${activePdfUrl}#toolbar=1&navpanes=0`}
-                className="w-full flex-1 border-0 rounded-lg"
-                title="PDF Viewer"
+                key={showPdfBrowserToolbar ? 'pdf-tools' : 'pdf-clean'}
+                src={`${activePdfUrl}#toolbar=${showPdfBrowserToolbar ? 1 : 0}&navpanes=0&scrollbar=1&view=FitH&pagemode=none`}
+                className="w-full flex-1 border-0 bg-neutral-900"
+                title="PDF Reader"
               />
             </div>
           ) : currentChapter?.html ? (
@@ -517,32 +621,29 @@ export const EbookReader: React.FC = () => {
               dangerouslySetInnerHTML={{ __html: currentChapter.html }}
             />
           ) : (
-            /* Authentic Excerpt Fallback */
+            /* Excerpt Fallback */
             <div
               style={{
                 fontSize: `${preferences.fontSize}px`,
                 lineHeight: preferences.lineHeight,
                 fontFamily: preferences.fontFamily === 'serif' ? 'Merriweather, Georgia, serif' : 'Inter, sans-serif',
               }}
-              className="reader-content select-text text-neutral-900"
+              className="reader-content select-text text-neutral-100"
             >
-              <h2 className="text-xl font-bold font-serif mb-4">{metadata.title || 'Chapter 6: On the Road'}</h2>
-              <p>sharply: Sylphie looked nostalgic, and Eris frowned sulkily.</p>
-              <p>“There’s a lot more fields of wheat than the last time we passed through here,” said Sylphie.</p>
-              <p>“If you say so,” said Eris. “I don’t remember.”</p>
-              <p>“I hope they get it all rebuilt soon.”</p>
-              <p>Eris tossed her head, looking even more surly than before. “Hmph. I couldn’t care less.”</p>
-              <p>“Come on, don’t say that. It’s the place where we were born and raised, right? I’m not saying I’d want to go back there for good, but… I’m sure you’ve got some old friends living there, right?”</p>
-              <p>“Not really. Everyone back home hated my guts.”</p>
-              <p>“Hmm. I guess I wasn’t too popular either, actually…” Sylphie paused, smiling slightly as she recalled the past.</p>
-              <p>It put me in a kind of sentimental mood as well. Both had been loners as kids, but for very different reasons. Sylphie was bullied relentlessly, and retreated into her shell like a turtle; Eris jumped at anyone who tried to approach her, scaring them off with her wild outbursts.</p>
+              <h2 className="text-xl font-bold font-serif mb-4">{metadata.title || activeTitle}</h2>
+              <p className="leading-relaxed mb-4">
+                The pages of the volume lay open before you. As you read, each passage immerses you further into the narrative.
+              </p>
+              <p className="leading-relaxed mb-4">
+                Use the toolbar on the left to toggle between themes, adjust font size, and pair your reading session with audio narration simultaneously.
+              </p>
             </div>
           )}
         </div>
 
         {/* DOCKED AUDIO COMPANION BAR (Simultaneous Reading & Listening!) */}
         {player.item && showAudioCompanion && (
-          <div className="w-full max-w-2xl mx-auto mt-2 px-4 py-2 rounded-2xl bg-[#14181e]/95 backdrop-blur-xl border border-teal-500/30 shadow-2xl flex items-center justify-between gap-3 text-xs text-neutral-100 z-30 animate-slide-up">
+          <div className="w-full max-w-2xl mx-auto mt-2 px-4 py-2.5 rounded-2xl bg-[#14181e]/95 backdrop-blur-xl border border-teal-500/30 shadow-2xl flex items-center justify-between gap-3 text-xs text-neutral-100 z-30 animate-slide-up">
             {/* Left: Indicator & Title */}
             <div className="flex items-center gap-2.5 min-w-0 max-w-xs">
               <div className="w-8 h-8 rounded-lg overflow-hidden bg-neutral-900 border border-teal-500/40 shrink-0 relative flex items-center justify-center">
@@ -601,11 +702,11 @@ export const EbookReader: React.FC = () => {
             <div className="flex items-center gap-1.5">
               <button
                 onClick={() => {
-                  const speeds = [1.0, 1.25, 1.5, 1.75, 2.0];
-                  const next = speeds[(speeds.indexOf(player.playbackRate) + 1) % speeds.length];
+                  const next = speedOptions[(speedOptions.indexOf(player.playbackRate) + 1) % speedOptions.length];
                   player.setPlaybackRate(next);
                 }}
-                className="px-1.5 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-[10px] font-mono text-teal-300"
+                className="px-2 py-0.5 rounded bg-neutral-800 hover:bg-neutral-700 text-[10px] font-mono text-teal-300 font-semibold"
+                title="Change playback speed (up to 4.0x)"
               >
                 {player.playbackRate}x
               </button>
@@ -621,23 +722,25 @@ export const EbookReader: React.FC = () => {
         )}
 
         {/* Navigation Arrows for Turning Pages / Chapters */}
-        <div className="flex items-center gap-8 mt-2 text-stone-400">
-          <button
-            onClick={handlePrevChapter}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full hover:bg-neutral-800 text-xs transition-colors"
-          >
-            <ChevronLeft className="w-4 h-4" /> Previous
-          </button>
-          <span className="text-xs text-stone-500 font-mono">
-            Page {currentPage} of {totalPages}
-          </span>
-          <button
-            onClick={handleNextChapter}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full hover:bg-neutral-800 text-xs transition-colors"
-          >
-            Next <ChevronRight className="w-4 h-4" />
-          </button>
-        </div>
+        {!isPdf && (
+          <div className="flex items-center gap-8 mt-2 text-stone-400">
+            <button
+              onClick={handlePrevChapter}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full hover:bg-neutral-800 text-xs transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4" /> Previous
+            </button>
+            <span className="text-xs text-stone-500 font-mono">
+              Page {currentPage} of {totalPages}
+            </span>
+            <button
+              onClick={handleNextChapter}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full hover:bg-neutral-800 text-xs transition-colors"
+            >
+              Next <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* RIGHT: Reading Progress Sidebar */}
@@ -657,18 +760,25 @@ export const EbookReader: React.FC = () => {
           </div>
 
           {/* Book Cover Artwork */}
-          <div className="w-full aspect-square rounded-2xl overflow-hidden shadow-2xl bg-neutral-900 border border-neutral-800/80 mb-6 relative">
-            {coverUrl ? (
+          <div className="w-full aspect-square rounded-2xl overflow-hidden shadow-2xl bg-neutral-900 border border-neutral-800/80 mb-6 relative group">
+            {coverSrc ? (
               <img
-                src={coverUrl}
+                src={coverSrc}
                 alt={metadata.title}
-                className="w-full h-full object-cover object-center"
+                onError={() => {
+                  if (coverSrc !== playerCover && playerCover) {
+                    setCoverSrc(playerCover);
+                  } else {
+                    setCoverSrc('');
+                  }
+                }}
+                className="w-full h-full object-cover object-center transition-transform duration-300 group-hover:scale-105"
               />
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-gradient-to-b from-neutral-800 to-neutral-900 text-stone-300">
                 <BookOpen className="w-16 h-16 text-teal-400/70 mb-3" />
-                <span className="font-serif font-bold text-base line-clamp-3">{metadata.title}</span>
-                <span className="text-xs text-stone-400 mt-2">{metadata.authorName}</span>
+                <span className="font-serif font-bold text-base line-clamp-3">{metadata.title || localFile?.name || 'Local Ebook'}</span>
+                <span className="text-xs text-stone-400 mt-2">{metadata.authorName || 'Author'}</span>
               </div>
             )}
           </div>
@@ -676,9 +786,9 @@ export const EbookReader: React.FC = () => {
           {/* Title & Volume Header */}
           <div className="mb-4">
             <h3 className="text-base font-medium text-neutral-100 line-clamp-2 leading-snug">
-              {metadata.title}
+              {metadata.title || localFile?.name || 'Local Ebook'}
             </h3>
-            <p className="text-xs text-stone-400 mt-1">{metadata.authorName}</p>
+            <p className="text-xs text-stone-400 mt-1">{metadata.authorName || 'Ebook Document'}</p>
           </div>
 
           {/* Progress Percentage & Scrubber */}

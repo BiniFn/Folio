@@ -37,9 +37,11 @@ export const BookCard: React.FC<BookCardProps> = ({
   const ebookProgress = item.userMediaProgress?.ebookProgress || 0;
   const hasProgress = audioProgress > 0 || ebookProgress > 0;
 
-  const coverUrl = auth.token
+  const localCover = (item as any)?.media?.coverPath || (item as any)?.coverDataUrl;
+  const serverCover = auth.token && !item.id.startsWith('local_')
     ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, item.id, 400, auth.useProxy)
     : '';
+  const coverUrl = localCover || serverCover || '';
 
   const handlePlay = (e: React.MouseEvent) => {
     e.stopPropagation();

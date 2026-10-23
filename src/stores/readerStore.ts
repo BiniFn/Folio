@@ -2,7 +2,10 @@ import { useState, useEffect } from 'react';
 import { LibraryItem, EbookFile, ReaderTheme, ReaderFont, ReaderPreferences } from '../types/audiobookshelf';
 import { progressSyncManager } from '../services/progressSync';
 import { authStore } from './authStore';
+import { playerStore } from './playerStore';
 import { parseEpub } from '../services/epubParser';
+import { extractPdfCover } from '../utils/pdfCover';
+import { absClient } from '../api/absClient';
 
 export interface TocChapter {
   id: string;
@@ -215,6 +218,12 @@ export const readerStore = {
 
     if (isPdf) {
       localBlobUrl = URL.createObjectURL(file);
+      try {
+        buffer = await file.arrayBuffer();
+        coverUrl = await extractPdfCover(buffer);
+      } catch (err) {
+        console.warn('PDF inspection failed:', err);
+      }
     } else if (isEpub) {
       buffer = await file.arrayBuffer();
       try {
@@ -233,11 +242,25 @@ export const readerStore = {
       }
     }
 
+    // Fallback: If no cover was extracted, inherit cover from currently playing audiobook or server
+    if (!coverUrl) {
+      const activePlayerItem = playerStore.getState().item;
+      const auth = authStore.getState();
+      if (activePlayerItem) {
+        if (activePlayerItem.media?.coverPath) {
+          coverUrl = activePlayerItem.media.coverPath;
+        } else if (auth.serverUrl && auth.token && !activePlayerItem.id.startsWith('local_')) {
+          coverUrl = absClient.getItemCoverUrl(auth.serverUrl, auth.token, activePlayerItem.id, 600, auth.useProxy);
+        }
+      }
+    }
+
     const localItem: LibraryItem = {
       id: `local_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       libraryId: 'local_library',
       mediaType: 'book',
       media: {
+        coverPath: coverUrl,
         metadata: {
           title,
           authorName: author,
@@ -388,6 +411,10 @@ export const readerStore = {
     readerStore.setPreferences({ lineHeight: Math.min(2.5, Math.max(1.2, lineHeight)) });
   },
 
+  setMaxWidth(maxWidth: number) {
+    readerStore.setPreferences({ maxWidth });
+  },
+
   toggleSidebar() {
     globalState = { ...globalState, showSidebar: !globalState.showSidebar };
     notify();
@@ -433,6 +460,7 @@ export function useReader() {
     setFontFamily: readerStore.setFontFamily,
     setFontSize: readerStore.setFontSize,
     setLineHeight: readerStore.setLineHeight,
+    setMaxWidth: readerStore.setMaxWidth,
     toggleSidebar: readerStore.toggleSidebar,
     toggleToc: readerStore.toggleToc,
     toggleSettings: readerStore.toggleSettings,
