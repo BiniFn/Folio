@@ -61,16 +61,30 @@ class AbsClient {
       });
 
       if (!response.ok) {
-        let errorMsg = `Server error ${response.status}`;
+        let errorMsg = response.status === 401
+          ? 'Invalid username or password. Please verify your credentials (Audiobookshelf usernames are case-sensitive).'
+          : `Server error ${response.status}`;
         try {
-          const errData = await response.json();
-          if (errData.details) {
-            errorMsg = `${errData.error || 'Error'}: ${errData.details}`;
-          } else {
-            errorMsg = errData.error || errData.message || errorMsg;
+          const text = await response.text();
+          if (text) {
+            try {
+              const errData = JSON.parse(text);
+              if (errData.details) {
+                errorMsg = `${errData.error || 'Error'}: ${errData.details}`;
+              } else if (errData.error || errData.message) {
+                errorMsg = errData.error || errData.message;
+              }
+            } catch {
+              // Plain text response from server (e.g. "Unauthorized" or custom message)
+              if (text.length > 0 && text.length < 200 && !text.includes('<!DOCTYPE')) {
+                errorMsg = text === 'Unauthorized'
+                  ? 'Invalid username or password. Please verify your credentials (Audiobookshelf usernames are case-sensitive).'
+                  : text;
+              }
+            }
           }
         } catch {
-          // fallback text
+          // ignore
         }
         throw new Error(errorMsg);
       }
@@ -116,7 +130,7 @@ class AbsClient {
     const data = await this.request<{ user: User }>('/api/login', { serverUrl, useProxy }, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username: username.trim(), password }),
     });
 
     if (!data?.user || !data?.user?.token) {

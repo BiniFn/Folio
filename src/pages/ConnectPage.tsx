@@ -12,10 +12,12 @@ export const ConnectPage: React.FC<ConnectPageProps> = ({
   onConnectSuccess,
   onExploreDemo,
 }) => {
-  const { login, isLoading, error } = useAuth();
+  const { login, loginWithToken, isLoading, error } = useAuth();
+  const [authMode, setAuthMode] = useState<'credentials' | 'token'>('credentials');
   const [serverUrl, setServerUrl] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [apiToken, setApiToken] = useState('');
   const [useProxy, setUseProxy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -31,13 +33,21 @@ export const ConnectPage: React.FC<ConnectPageProps> = ({
       setLocalError('Please enter your Audiobookshelf server address');
       return;
     }
-    if (!username.trim() || !password) {
-      setLocalError('Please enter your username and password');
-      return;
-    }
 
     try {
-      await login(serverUrl, username, password, useProxy);
+      if (authMode === 'token') {
+        if (!apiToken.trim()) {
+          setLocalError('Please enter your API Token');
+          return;
+        }
+        await loginWithToken(serverUrl, apiToken, useProxy);
+      } else {
+        if (!username.trim() || !password) {
+          setLocalError('Please enter your username and password');
+          return;
+        }
+        await login(serverUrl, username, password, useProxy);
+      }
       onConnectSuccess?.();
     } catch (err: any) {
       setLocalError(err.message || 'Could not connect to server. Check address and credentials.');
@@ -122,7 +132,7 @@ export const ConnectPage: React.FC<ConnectPageProps> = ({
             <div className="relative">
               <input
                 type="text"
-                placeholder="https://audiobooks.example.com or http://localhost:13378"
+                placeholder="https://abs.yourdomain.com or https://...trycloudflare.com"
                 value={serverUrl}
                 onChange={(e) => setServerUrl(e.target.value)}
                 className="w-full bg-[#12161a] border border-[#232830] focus:border-teal-500/70 rounded-xl px-3.5 py-2.5 text-xs text-neutral-100 placeholder-stone-600 outline-none transition-colors"
@@ -134,33 +144,80 @@ export const ConnectPage: React.FC<ConnectPageProps> = ({
             </span>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-stone-300 mb-1.5">
-              Username
-            </label>
-            <input
-              type="text"
-              placeholder="Username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="w-full bg-[#12161a] border border-[#232830] focus:border-teal-500/70 rounded-xl px-3.5 py-2.5 text-xs text-neutral-100 placeholder-stone-600 outline-none transition-colors"
-              disabled={isLoading}
-            />
+          {/* Auth Method Tabs */}
+          <div className="flex bg-[#12161a] p-1 rounded-xl border border-[#232830] text-xs">
+            <button
+              type="button"
+              onClick={() => setAuthMode('credentials')}
+              className={`flex-1 py-1.5 rounded-lg font-medium transition-all ${
+                authMode === 'credentials'
+                  ? 'bg-teal-500 text-black font-semibold shadow-sm'
+                  : 'text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              Username & Password
+            </button>
+            <button
+              type="button"
+              onClick={() => setAuthMode('token')}
+              className={`flex-1 py-1.5 rounded-lg font-medium transition-all ${
+                authMode === 'token'
+                  ? 'bg-teal-500 text-black font-semibold shadow-sm'
+                  : 'text-stone-400 hover:text-stone-200'
+              }`}
+            >
+              API Token
+            </button>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-stone-300 mb-1.5">
-              Password
-            </label>
-            <input
-              type="password"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-[#12161a] border border-[#232830] focus:border-teal-500/70 rounded-xl px-3.5 py-2.5 text-xs text-neutral-100 placeholder-stone-600 outline-none transition-colors"
-              disabled={isLoading}
-            />
-          </div>
+          {authMode === 'credentials' ? (
+            <>
+              <div>
+                <label className="block text-xs font-medium text-stone-300 mb-1.5">
+                  Username <span className="text-[10px] text-stone-500">(case-sensitive)</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="Username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  className="w-full bg-[#12161a] border border-[#232830] focus:border-teal-500/70 rounded-xl px-3.5 py-2.5 text-xs text-neutral-100 placeholder-stone-600 outline-none transition-colors"
+                  disabled={isLoading}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-stone-300 mb-1.5">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full bg-[#12161a] border border-[#232830] focus:border-teal-500/70 rounded-xl px-3.5 py-2.5 text-xs text-neutral-100 placeholder-stone-600 outline-none transition-colors"
+                  disabled={isLoading}
+                />
+              </div>
+            </>
+          ) : (
+            <div>
+              <label className="block text-xs font-medium text-stone-300 mb-1.5">
+                API Token
+              </label>
+              <textarea
+                rows={2}
+                placeholder="Paste your Audiobookshelf API token here"
+                value={apiToken}
+                onChange={(e) => setApiToken(e.target.value)}
+                className="w-full bg-[#12161a] border border-[#232830] focus:border-teal-500/70 rounded-xl px-3.5 py-2 text-xs text-neutral-100 placeholder-stone-600 outline-none transition-colors font-mono resize-none"
+                disabled={isLoading}
+              />
+              <span className="text-[10px] text-stone-500 mt-1 block">
+                Found in Audiobookshelf web under <em>Settings &gt; Users &gt; Your User &gt; API Token</em>
+              </span>
+            </div>
+          )}
 
           {/* CORS Proxy Option */}
           <div className="flex items-center gap-2 py-1">

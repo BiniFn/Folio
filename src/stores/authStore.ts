@@ -168,6 +168,45 @@ export const authStore = {
     }
   },
 
+  async loginWithToken(serverUrlInput: string, tokenInput: string, useProxy: boolean = false) {
+    const cleanUrl = normalizeUrl(serverUrlInput);
+    if (!cleanUrl) throw new Error('Please enter a valid server URL');
+    const cleanToken = tokenInput.trim();
+    if (!cleanToken) throw new Error('Please enter your API Token');
+
+    globalState = { ...globalState, isLoading: true, error: null };
+    notify();
+
+    try {
+      const user = await absClient.verifySession(cleanUrl, cleanToken, useProxy);
+      const libraries = await absClient.getLibraries(cleanUrl, cleanToken, useProxy);
+      const activeLib = libraries[0]?.id || null;
+
+      globalState = {
+        serverUrl: cleanUrl,
+        token: cleanToken,
+        user,
+        libraries,
+        activeLibraryId: activeLib,
+        useProxy,
+        isLoading: false,
+        error: null,
+      };
+
+      saveToStorage();
+      notify();
+      return user;
+    } catch (err: any) {
+      globalState = {
+        ...globalState,
+        isLoading: false,
+        error: err.message || 'Token verification failed. Please check your API Token.',
+      };
+      notify();
+      throw err;
+    }
+  },
+
   setActiveLibrary(libraryId: string) {
     globalState = { ...globalState, activeLibraryId: libraryId };
     saveToStorage();
@@ -200,6 +239,7 @@ export function useAuth() {
   return {
     ...state,
     login: authStore.login,
+    loginWithToken: authStore.loginWithToken,
     logout: authStore.logout,
     setActiveLibrary: authStore.setActiveLibrary,
     initSession: authStore.initSession,
