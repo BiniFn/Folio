@@ -20,8 +20,9 @@ class AbsClient {
     const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
 
     if (useProxy) {
-      const proxyUrl = new URL('/abs-proxy' + cleanEndpoint, window.location.origin);
+      const proxyUrl = new URL('/api/proxy', window.location.origin);
       proxyUrl.searchParams.set('target', cleanBase);
+      proxyUrl.searchParams.set('path', cleanEndpoint);
       return proxyUrl.toString();
     }
 
@@ -63,7 +64,11 @@ class AbsClient {
         let errorMsg = `Server error ${response.status}`;
         try {
           const errData = await response.json();
-          errorMsg = errData.error || errData.message || errorMsg;
+          if (errData.details) {
+            errorMsg = `${errData.error || 'Error'}: ${errData.details}`;
+          } else {
+            errorMsg = errData.error || errData.message || errorMsg;
+          }
         } catch {
           // fallback text
         }
@@ -77,9 +82,12 @@ class AbsClient {
       }
       return (null as unknown) as T;
     } catch (err: any) {
-      // If direct request failed with a fetch failure (likely CORS or network), try proxy fallback once
-      if (!useProxy && err?.name === 'TypeError' && err?.message?.includes('fetch')) {
-        console.warn('Direct connection failed (possibly CORS). Retrying through proxy...');
+      // If direct request failed with a fetch failure (likely CORS), retry through proxy
+      // but do not try cloud proxy for a localhost server if running on a remote cloud deployment
+      const isLocalServer = serverUrl.includes('localhost') || serverUrl.includes('127.0.0.1');
+
+      if (!useProxy && !isLocalServer && err?.name === 'TypeError') {
+        console.warn('Direct connection failed. Retrying through proxy...');
         return this.request<T>(endpoint, { ...options, useProxy: true }, init);
       }
       throw err;

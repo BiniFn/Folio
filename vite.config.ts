@@ -10,13 +10,16 @@ export default defineConfig({
       name: 'abs-cors-proxy',
       configureServer(server) {
         server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
-          if (req.url && req.url.startsWith('/abs-proxy')) {
+          if (req.url && (req.url.startsWith('/abs-proxy') || req.url.startsWith('/api/proxy'))) {
             try {
               const urlObj = new URL(req.url, 'http://localhost');
               const targetServer = req.headers['x-abs-target'] as string || urlObj.searchParams.get('target');
-              const targetPath = urlObj.pathname.replace(/^\/abs-proxy/, '') || '/';
+              let targetPath = urlObj.searchParams.get('path') || urlObj.pathname.replace(/^\/(abs-proxy|api\/proxy)/, '') || '/';
+              if (!targetPath.startsWith('/')) targetPath = '/' + targetPath;
+
               const targetQuery = new URLSearchParams(urlObj.searchParams);
               targetQuery.delete('target');
+              targetQuery.delete('path');
               
               if (!targetServer) {
                 res.statusCode = 400;

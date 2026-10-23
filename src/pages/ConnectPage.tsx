@@ -18,7 +18,9 @@ export const ConnectPage: React.FC<ConnectPageProps> = ({
   const [useProxy, setUseProxy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
-  const isInsecure = serverUrl.trim().startsWith('http://') && !serverUrl.includes('localhost') && !serverUrl.includes('127.0.0.1');
+  const isLocalServer = serverUrl.includes('localhost') || serverUrl.includes('127.0.0.1');
+  const isHostedOnCloud = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location.hostname);
+  const isInsecure = serverUrl.trim().startsWith('http://') && !isLocalServer;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,6 +69,19 @@ export const ConnectPage: React.FC<ConnectPageProps> = ({
             <div className="flex-1">
               <span className="font-semibold block mb-0.5">Connection failed</span>
               <span className="text-[11px] text-red-300/90">{localError || error}</span>
+            </div>
+          </div>
+        )}
+
+        {/* Localhost on Cloud Deployment Warning */}
+        {isLocalServer && isHostedOnCloud && (
+          <div className="mb-4 p-3 rounded-xl bg-blue-950/40 border border-blue-800/40 text-blue-300 text-xs flex items-start gap-2">
+            <Server className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <span className="font-semibold block mb-0.5">Local Server Tip</span>
+              <span className="text-[11px] text-blue-300/90 leading-relaxed block">
+                Since Folio is hosted on the cloud (Vercel), uncheck "Use built-in proxy" below so your browser connects directly to your machine, or expose your local server using Cloudflare Tunnel or ngrok.
+              </span>
             </div>
           </div>
         )}

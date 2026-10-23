@@ -5,12 +5,12 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
-      "source": "/abs-proxy/:path*",
-      "destination": "/api/proxy?path=:path*"
-    },
-    {
       "source": "/api/proxy",
       "destination": "/api/proxy"
+    },
+    {
+      "source": "/abs-proxy/:path*",
+      "destination": "/api/proxy?path=/:path*"
     },
     {
       "source": "/(.*)",
