@@ -20,18 +20,16 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
   isFavorite = false,
   onToggleFavorite,
 }) => {
-  if (!item) return null;
-
   const auth = authStore.getState();
-  const [activeItem, setActiveItem] = useState<LibraryItem>(item);
+  const [activeItem, setActiveItem] = useState<LibraryItem | null>(item);
   const [coverError, setCoverError] = useState(false);
 
-  // Load expanded item metadata in background
+  // Load expanded item metadata in background unconditionally
   useEffect(() => {
     setActiveItem(item);
     setCoverError(false);
 
-    if (auth.token && auth.serverUrl && item.id && !item.id.startsWith('local_')) {
+    if (item && auth.token && auth.serverUrl && item.id && !item.id.startsWith('local_')) {
       absClient.getItem(auth.serverUrl, auth.token, item.id, auth.useProxy)
         .then(expanded => {
           if (expanded && expanded.id === item.id) {
@@ -42,48 +40,51 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
           console.warn('Failed to fetch expanded item details:', err);
         });
     }
-  }, [item.id]);
+  }, [item?.id]);
 
-  const metadata = activeItem.media?.metadata || {};
+  if (!item) return null;
+
+  const currentItem = activeItem && activeItem.id === item.id ? activeItem : item;
+  const metadata = currentItem.media?.metadata || {};
   const hasAudio = !!(
-    activeItem.media?.duration || 
-    activeItem.media?.numTracks || 
-    activeItem.media?.tracks?.length || 
-    activeItem.media?.audioFiles?.length ||
-    (activeItem as any).numAudioFiles
+    currentItem.media?.duration || 
+    currentItem.media?.numTracks || 
+    currentItem.media?.tracks?.length || 
+    currentItem.media?.audioFiles?.length ||
+    (currentItem as any).numAudioFiles
   );
   
   const hasEbook = !!(
-    activeItem.media?.ebookFile ||
-    activeItem.media?.ebookFormat ||
-    activeItem.mediaType === 'book' ||
-    (activeItem.media as any)?.libraryFiles?.some((f: any) => {
+    currentItem.media?.ebookFile ||
+    currentItem.media?.ebookFormat ||
+    currentItem.mediaType === 'book' ||
+    (currentItem.media as any)?.libraryFiles?.some((f: any) => {
       const ext = (f.metadata?.ext || f.ext || '').toLowerCase();
       return ext === '.epub' || ext === '.pdf' || ext === 'epub' || ext === 'pdf';
     })
   );
 
-  const audioProgress = activeItem.userMediaProgress?.progress || 0;
-  const ebookProgress = activeItem.userMediaProgress?.ebookProgress || 0;
+  const audioProgress = currentItem.userMediaProgress?.progress || 0;
+  const ebookProgress = currentItem.userMediaProgress?.ebookProgress || 0;
 
   const coverUrl = auth.token && !item.id.startsWith('local_')
-    ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, activeItem.id, 600, auth.useProxy)
+    ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, currentItem.id, 600, auth.useProxy)
     : '';
 
   const handleStartListening = () => {
-    playerStore.loadAndPlay(activeItem);
+    playerStore.loadAndPlay(currentItem);
     onClose();
   };
 
   const handleStartReading = () => {
-    readerStore.openBook(activeItem);
+    readerStore.openBook(currentItem);
     onClose();
   };
 
   const handleReadAndListenTogether = () => {
     // Simultaneous reading and listening!
-    playerStore.loadAndPlay(activeItem);
-    readerStore.openBook(activeItem);
+    playerStore.loadAndPlay(currentItem);
+    readerStore.openBook(currentItem);
     onClose();
   };
 

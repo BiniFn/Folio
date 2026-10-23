@@ -73,34 +73,29 @@ export const EbookReader: React.FC = () => {
   const contentRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  if (!isOpen || !item) return null;
-
-  const auth = authStore.getState();
-  const metadata = item.media?.metadata || {};
-  const isPdf = ebookFile?.ext?.toLowerCase() === '.pdf' || localFile?.name.toLowerCase().endsWith('.pdf');
-  const coverUrl = auth.token && !item.id.startsWith('local_')
-    ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, item.id, 600, auth.useProxy)
-    : '';
-
-  // Check if this book or any book has audio
-  const hasAudioCompanion = !!(
-    item.media?.duration || 
-    item.media?.numTracks || 
-    item.media?.tracks?.length ||
-    item.media?.audioFiles?.length ||
-    (item as any).numAudioFiles
+  const isPdf = !!(
+    ebookFile?.ext?.toLowerCase() === '.pdf' || 
+    localFile?.name.toLowerCase().endsWith('.pdf') ||
+    (item?.media?.ebookFile?.ext?.toLowerCase() === '.pdf')
   );
 
-  // Load Ebook Content (EPUB or PDF, local or remote)
+  // Load Ebook Content (EPUB or PDF, local or remote) unconditionally
   useEffect(() => {
     let isCancelled = false;
     let createdBlobUrl: string | null = null;
 
     async function loadContent() {
+      if (!isOpen || !item) {
+        setIsLoading(false);
+        return;
+      }
+
       setIsLoading(true);
       setError(null);
       setParsedEpub(null);
       setActivePdfUrl(null);
+
+      const auth = authStore.getState();
 
       try {
         // 1. Local PDF
@@ -179,7 +174,24 @@ export const EbookReader: React.FC = () => {
         URL.revokeObjectURL(createdBlobUrl);
       }
     };
-  }, [item.id, ebookFile?.ino, localBlobUrl, localBuffer]);
+  }, [isOpen, item?.id, ebookFile?.ino, localBlobUrl, localBuffer, isPdf]);
+
+  if (!isOpen || !item) return null;
+
+  const auth = authStore.getState();
+  const metadata = item.media?.metadata || {};
+  const coverUrl = auth.token && !item.id.startsWith('local_')
+    ? absClient.getItemCoverUrl(auth.serverUrl, auth.token, item.id, 600, auth.useProxy)
+    : '';
+
+  // Check if this book or any book has audio
+  const hasAudioCompanion = !!(
+    item.media?.duration || 
+    item.media?.numTracks || 
+    item.media?.tracks?.length || 
+    item.media?.audioFiles?.length ||
+    (item as any).numAudioFiles
+  );
 
   // Handle Scroll Progress inside chapter
   const handleScroll = () => {
