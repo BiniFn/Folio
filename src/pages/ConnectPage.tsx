@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Radio, ShieldAlert, ArrowRight, Loader2, Sparkles, CheckCircle2, Server } from 'lucide-react';
+import { Radio, ShieldAlert, ArrowRight, Loader2, Sparkles, Server, Terminal } from 'lucide-react';
 import { useAuth } from '../stores/authStore';
+import { isPrivateNetworkAddress } from '../utils/formatters';
 
 interface ConnectPageProps {
   onConnectSuccess?: () => void;
@@ -18,9 +19,9 @@ export const ConnectPage: React.FC<ConnectPageProps> = ({
   const [useProxy, setUseProxy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
-  const isLocalServer = serverUrl.includes('localhost') || serverUrl.includes('127.0.0.1');
+  const isPrivateServer = isPrivateNetworkAddress(serverUrl);
   const isHostedOnCloud = typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location.hostname);
-  const isInsecure = serverUrl.trim().startsWith('http://') && !isLocalServer;
+  const isInsecure = serverUrl.trim().startsWith('http://') && !isPrivateServer;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,15 +74,31 @@ export const ConnectPage: React.FC<ConnectPageProps> = ({
           </div>
         )}
 
-        {/* Localhost on Cloud Deployment Warning */}
-        {isLocalServer && isHostedOnCloud && (
-          <div className="mb-4 p-3 rounded-xl bg-blue-950/40 border border-blue-800/40 text-blue-300 text-xs flex items-start gap-2">
-            <Server className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <span className="font-semibold block mb-0.5">Local Server Tip</span>
-              <span className="text-[11px] text-blue-300/90 leading-relaxed block">
-                Since Folio is hosted on the cloud (Vercel), uncheck "Use built-in proxy" below so your browser connects directly to your machine, or expose your local server using Cloudflare Tunnel or ngrok.
-              </span>
+        {/* Private IP on Cloud Deployment Warning */}
+        {isPrivateServer && isHostedOnCloud && (
+          <div className="mb-4 p-3.5 rounded-xl bg-amber-950/40 border border-amber-800/50 text-amber-300 text-xs flex flex-col gap-2.5">
+            <div className="flex items-start gap-2">
+              <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold block">Local Home Network Address</span>
+                <span className="text-[11px] text-amber-200/90 leading-relaxed block mt-0.5">
+                  You are accessing Folio from the cloud (<code className="text-amber-300 font-mono">vercel.app</code>) while targeting a private home IP (<code className="text-amber-300 font-mono">{serverUrl || '192.168.x.x'}</code>).
+                </span>
+              </div>
+            </div>
+
+            <div className="p-2.5 rounded-lg bg-black/50 border border-amber-900/40 text-[11px] text-stone-300 flex flex-col gap-2">
+              <span className="font-semibold text-amber-300">How to connect:</span>
+              <div className="flex flex-col gap-1">
+                <span><strong>Option 1 (Recommended):</strong> Create a free Cloudflare Tunnel on your host machine:</span>
+                <div className="bg-neutral-900 p-2 rounded text-[10px] text-teal-300 font-mono flex items-center justify-between overflow-x-auto">
+                  <code>cloudflared tunnel --url {serverUrl || 'http://192.168.1.11:3333'}</code>
+                </div>
+                <span className="text-stone-400 text-[10px]">Then paste the generated <span className="text-teal-300">https://...trycloudflare.com</span> URL above.</span>
+              </div>
+              <div className="pt-1.5 border-t border-neutral-800/80">
+                <span><strong>Option 2:</strong> Run Folio directly on your local computer via <code className="text-teal-300 font-mono">bun run dev</code> (opens on <span className="text-stone-200 font-mono">http://localhost:3000</span>, which connects directly over your LAN).</span>
+              </div>
             </div>
           </div>
         )}

@@ -45,6 +45,17 @@ describe('Formatters & URL Normalization', () => {
     assert.strictEqual(formatFileSize(1048576), '1.0 MB');
     assert.strictEqual(formatFileSize(8452100), '8.1 MB');
   });
+
+  test('isPrivateNetworkAddress identifies local LAN and loopback addresses', async () => {
+    const { isPrivateNetworkAddress } = await import('../src/utils/formatters.ts');
+    assert.strictEqual(isPrivateNetworkAddress('http://192.168.1.11:3333'), true);
+    assert.strictEqual(isPrivateNetworkAddress('192.168.0.100'), true);
+    assert.strictEqual(isPrivateNetworkAddress('http://localhost:13378'), true);
+    assert.strictEqual(isPrivateNetworkAddress('http://127.0.0.1:8080'), true);
+    assert.strictEqual(isPrivateNetworkAddress('http://10.0.0.5:3000'), true);
+    assert.strictEqual(isPrivateNetworkAddress('https://abs.mydomain.com'), false);
+    assert.strictEqual(isPrivateNetworkAddress('https://audiobook.cloudflare.com'), false);
+  });
 });
 
 describe('DecompressionStream for EPUB unpacking', () => {

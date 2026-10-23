@@ -2,6 +2,19 @@ export const config = {
   runtime: 'edge',
 };
 
+function isPrivateHost(hostname) {
+  const host = (hostname || '').toLowerCase();
+  return (
+    host === 'localhost' ||
+    host.endsWith('.local') ||
+    host === '0.0.0.0' ||
+    /^127\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^10\./.test(host) ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)
+  );
+}
+
 export default async function handler(request) {
   // Handle CORS preflight
   if (request.method === 'OPTIONS') {
@@ -46,17 +59,23 @@ export default async function handler(request) {
     }
 
     const cleanBase = targetServer.trim().replace(/\/+$/, '');
+    let targetHost = '';
+    try {
+      const parsed = new URL(cleanBase.startsWith('http') ? cleanBase : `http://${cleanBase}`);
+      targetHost = parsed.hostname;
+    } catch {
+      targetHost = cleanBase;
+    }
 
-    // Check for localhost / loopback on cloud edge
-    const isLocalhost = cleanBase.includes('localhost') || cleanBase.includes('127.0.0.1') || cleanBase.includes('0.0.0.0');
-    if (isLocalhost) {
+    // Check for private / LAN IP addresses
+    if (isPrivateHost(targetHost)) {
       return new Response(
         JSON.stringify({
-          error: 'Localhost not reachable from cloud proxy',
-          details: 'Your Folio app is deployed on Vercel (cloud), which cannot connect to "localhost" on your personal machine. To use a local server: expose it using Cloudflare Tunnel / ngrok, uncheck "Use built-in proxy", or run Folio locally with "npm run dev".',
+          error: 'Local network IP not reachable from cloud',
+          details: `The address "${cleanBase}" is on your private home network (${targetHost}). Cloud deployments (like Vercel) run in a remote datacenter and cannot access devices on your home router. To connect: expose your server with Cloudflare Tunnel (cloudflared tunnel --url ${cleanBase}), or run Folio locally via "npm run dev".`
         }),
         { 
-          status: 502, 
+          status: 400, 
           headers: { 
             'Content-Type': 'application/json',
             'Access-Control-Allow-Origin': '*',
@@ -119,7 +138,7 @@ export default async function handler(request) {
   } catch (err) {
     return new Response(
       JSON.stringify({ 
-        error: 'Proxy request failed', 
+        error: 'Proxy connection failed', 
         details: err?.message || String(err) 
       }),
       { 

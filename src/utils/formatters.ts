@@ -53,6 +53,26 @@ export function formatProgressPercent(progress: number): string {
   return `${Math.round(clamped * 100)}% complete`;
 }
 
+export function isPrivateNetworkAddress(url: string): boolean {
+  if (!url) return false;
+  try {
+    const raw = url.trim();
+    const withProto = /^https?:\/\//i.test(raw) ? raw : `http://${raw}`;
+    const host = new URL(withProto).hostname.toLowerCase();
+    return (
+      host === 'localhost' ||
+      host.endsWith('.local') ||
+      host === '0.0.0.0' ||
+      /^127\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^10\./.test(host) ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function formatFileSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
