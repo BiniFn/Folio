@@ -30,6 +30,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<any>(null);
   const panStartRef = useRef<{ x: number; y: number; scrollLeft: number; scrollTop: number }>({
     x: 0,
@@ -46,6 +47,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [fitMode, setFitMode] = useState<'height' | 'width' | 'auto'>('height');
   const [zoom, setZoom] = useState<number>(1.0);
+  const [canvasDimensions, setCanvasDimensions] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   const [isPanning, setIsPanning] = useState<boolean>(false);
   const [readingDirection, setReadingDirection] = useState<'ltr' | 'rtl'>('ltr');
   const [showControls, setShowControls] = useState<boolean>(true);
@@ -139,7 +141,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
     };
   }, [buffer, url]);
 
-  // Render the current page onto the canvas
+  // Render the current page onto the canvas and textLayer for text selection
   const renderCurrentPage = useCallback(async () => {
     if (!pdfDoc || !canvasRef.current || !containerRef.current) return;
 
@@ -178,10 +180,15 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
       const dpr = window.devicePixelRatio || 1;
       const viewport = page.getViewport({ scale: targetScale });
 
+      const w = Math.floor(viewport.width);
+      const h = Math.floor(viewport.height);
+
+      setCanvasDimensions({ width: w, height: h });
+
       canvas.width = Math.floor(viewport.width * dpr);
       canvas.height = Math.floor(viewport.height * dpr);
-      canvas.style.width = `${Math.floor(viewport.width)}px`;
-      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
 
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
@@ -198,6 +205,39 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
       renderTaskRef.current = task;
       await task.promise;
       ctx.restore();
+
+      // Render Text Layer for Selectable Text with Cursor
+      if (textLayerRef.current) {
+        const textLayerDiv = textLayerRef.current;
+        textLayerDiv.innerHTML = '';
+        textLayerDiv.style.width = `${w}px`;
+        textLayerDiv.style.height = `${h}px`;
+
+        try {
+          const textContent = await page.getTextContent();
+          const pdfjs = (window as any).pdfjsLib;
+
+          if (pdfjs?.renderTextLayer) {
+            const textTask = pdfjs.renderTextLayer({
+              textContentSource: textContent,
+              textContent: textContent,
+              container: textLayerDiv,
+              viewport: viewport,
+              textDivs: [],
+            });
+            await (textTask.promise || textTask);
+          } else if (pdfjs?.TextLayer) {
+            const tl = new pdfjs.TextLayer({
+              textContentSource: textContent,
+              container: textLayerDiv,
+              viewport: viewport,
+            });
+            await tl.render();
+          }
+        } catch (textErr) {
+          console.warn('Text layer rendering note:', textErr);
+        }
+      }
 
       setIsRendering(false);
       renderTaskRef.current = null;
@@ -310,8 +350,13 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
     };
   }, []);
 
-  // Panning when zoomed in
+  // Panning when zoomed in (only when dragging background or when zoomed)
   const handleMouseDown = (e: React.MouseEvent) => {
+    // If user clicked inside textLayer, let them select text!
+    if ((e.target as HTMLElement)?.closest('.textLayer')) {
+      return;
+    }
+
     if (zoom > 1.01 && containerRef.current) {
       setIsPanning(true);
       panStartRef.current = {
@@ -336,8 +381,11 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
     setIsPanning(false);
   };
 
-  // Canvas click toggles controls, NEVER turns pages
+  // Canvas click toggles controls, NEVER turns pages, ignores text selection
   const handleCanvasContainerClick = (e: React.MouseEvent) => {
+    // If text was selected by the user, do not toggle controls
+    const selection = window.getSelection();
+    if (selection && selection.toString().length > 0) return;
     if (isPanning) return;
     setShowControls(prev => !prev);
   };
@@ -352,10 +400,10 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
   }
 
   return (
-    <div className="relative w-full h-full flex-1 flex flex-col bg-[#0b0e11] select-none overflow-hidden">
+    <div className="relative w-full h-full flex-1 flex flex-col bg-[#0b0e11] select-text overflow-hidden">
       {/* Top MangaDex Header Overlay */}
       {showControls && (
-        <div className="absolute top-0 inset-x-0 z-30 flex items-center justify-between px-6 py-3 bg-[#0e1216]/95 backdrop-blur-md border-b border-white/5 animate-fade-in text-xs text-stone-300">
+        <div className="absolute top-0 inset-x-0 z-30 flex items-center justify-between px-6 py-3 bg-[#0e1216]/95 backdrop-blur-md border-b border-white/5 animate-fade-in text-xs text-stone-300 select-none">
           <div className="flex items-center gap-3 min-w-0">
             <span className="font-medium text-neutral-100 truncate max-w-sm md:max-w-md">
               {title || 'Document'}
@@ -443,7 +491,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
         </div>
       )}
 
-      {/* Main Canvas Viewport (Scrollable/Pannable when zoomed) */}
+      {/* Main Viewport: Canvas + High-Fidelity Text Layer for Cursor Selection */}
       <div
         ref={containerRef}
         onClick={handleCanvasContainerClick}
@@ -456,20 +504,33 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
         }`}
       >
         {isLoading ? (
-          <div className="flex flex-col items-center justify-center gap-3 text-stone-400 animate-pulse">
+          <div className="flex flex-col items-center justify-center gap-3 text-stone-400 animate-pulse select-none">
             <div className="w-8 h-8 rounded-full border-2 border-teal-500 border-t-transparent animate-spin" />
             <span className="text-xs font-mono">Loading pages...</span>
           </div>
         ) : (
-          <canvas
-            ref={canvasRef}
-            className="shadow-2xl transition-opacity duration-150 rounded my-auto mx-auto shrink-0"
-            style={{ opacity: isRendering ? 0.8 : 1 }}
-          />
+          <div
+            className="relative shadow-2xl rounded my-auto mx-auto shrink-0 select-text"
+            style={{
+              width: canvasDimensions.width ? `${canvasDimensions.width}px` : 'auto',
+              height: canvasDimensions.height ? `${canvasDimensions.height}px` : 'auto',
+            }}
+          >
+            <canvas
+              ref={canvasRef}
+              className="block rounded transition-opacity duration-150"
+              style={{ opacity: isRendering ? 0.85 : 1 }}
+            />
+            {/* Transparent Selectable Text Overlay */}
+            <div
+              ref={textLayerRef}
+              className="textLayer absolute inset-0 select-text pointer-events-auto"
+            />
+          </div>
         )}
 
         {/* Left Explicit Arrow Button */}
-        <div className="absolute inset-y-0 left-0 w-20 flex items-center justify-start pl-3 pointer-events-none z-20">
+        <div className="absolute inset-y-0 left-0 w-20 flex items-center justify-start pl-3 pointer-events-none z-20 select-none">
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -484,7 +545,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
         </div>
 
         {/* Right Explicit Arrow Button */}
-        <div className="absolute inset-y-0 right-0 w-20 flex items-center justify-end pr-3 pointer-events-none z-20">
+        <div className="absolute inset-y-0 right-0 w-20 flex items-center justify-end pr-3 pointer-events-none z-20 select-none">
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -501,7 +562,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
 
       {/* MangaDex Bottom Scrubber Overlay */}
       {showControls && (
-        <div className="absolute bottom-0 inset-x-0 z-30 flex flex-col gap-2 px-6 py-3 bg-[#0e1216]/95 backdrop-blur-md border-t border-white/5 animate-slide-up text-xs text-stone-300">
+        <div className="absolute bottom-0 inset-x-0 z-30 flex flex-col gap-2 px-6 py-3 bg-[#0e1216]/95 backdrop-blur-md border-t border-white/5 animate-slide-up text-xs text-stone-300 select-none">
           <div className="flex items-center justify-between gap-4">
             {/* Prev Button */}
             <button
