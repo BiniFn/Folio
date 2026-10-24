@@ -10,8 +10,32 @@ import {
   Search,
   ChevronUp,
   ChevronDown,
-  X
+  X,
+  List
 } from 'lucide-react';
+
+/**
+ * Normalizes text for smart fuzzy search across light novels, documents, and web texts:
+ * - Decomposes and strips diacritics / accents (café -> cafe, naïve -> naive)
+ * - Converts typographic smart single quotes / apostrophes (‘, ’, ‚, ‛, ′) to ASCII '
+ * - Converts typographic smart double quotes (“, ”, „, ‟, «, ») to ASCII "
+ * - Converts em-dashes (—), en-dashes (–), minuses (−) to ASCII -
+ * - Strips soft hyphens, zero-width spaces, and control joiners
+ * - Collapses repeated whitespace & non-breaking spaces (\u00A0)
+ */
+export function normalizeSearchText(text: string): string {
+  if (!text) return '';
+  return text
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035`]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033\u2036«»]/g, '"')
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
+    .replace(/[\u00AD\u200B\u200C\u200D\uFEFF]/g, '')
+    .replace(/[\s\u00A0]+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
 
 interface PdfPageReaderProps {
   buffer?: ArrayBuffer | null;
@@ -37,6 +61,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
   onToggleFind,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const pageWrapperRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<any>(null);
@@ -64,6 +89,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [matches, setMatches] = useState<Array<{ page: number; snippet?: string }>>([]);
   const [currentMatchIndex, setCurrentMatchIndex] = useState<number>(-1);
+  const [showMatchesDropdown, setShowMatchesDropdown] = useState<boolean>(false);
 
   const textCacheRef = useRef<Map<number, string>>(new Map());
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -211,6 +237,10 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
       const h = viewport.height;
 
       setCanvasDimensions({ width: w, height: h });
+      if (pageWrapperRef.current) {
+        pageWrapperRef.current.style.width = `${w}px`;
+        pageWrapperRef.current.style.height = `${h}px`;
+      }
 
       canvas.width = Math.round(viewport.width * dpr);
       canvas.height = Math.round(viewport.height * dpr);
@@ -233,10 +263,19 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
       await task.promise;
       ctx.restore();
 
+      // Wait for embedded PDF fonts to be ready so text layer font measurements align with canvas
+      if ((document as any).fonts?.ready) {
+        try {
+          await (document as any).fonts.ready;
+        } catch {}
+      }
+
       // Render Text Layer for Selectable Text with Cursor
       if (textLayerRef.current) {
         const textLayerDiv = textLayerRef.current;
         textLayerDiv.innerHTML = '';
+        textLayerDiv.style.left = '0px';
+        textLayerDiv.style.top = '0px';
         textLayerDiv.style.width = `${w}px`;
         textLayerDiv.style.height = `${h}px`;
         textLayerDiv.style.setProperty('--scale-factor', `${viewport.scale}`);
@@ -252,7 +291,6 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
               container: textLayerDiv,
               viewport: viewport,
               textDivs: [],
-              enhanceTextSelection: true,
             });
             await (textTask.promise || textTask);
           } else if (pdfjs?.TextLayer) {
@@ -264,15 +302,17 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
             await tl.render();
           }
 
-          // Highlight searched words on current page if find is active
+          // Highlight searched words on current page if find is active using smart normalization
           if (showFindBar && searchQuery && searchQuery.trim().length >= 2) {
-            const q = searchQuery.trim().toLowerCase();
+            const normQ = normalizeSearchText(searchQuery);
+            const queryWords = normQ.split(' ').filter(w => w.length > 0);
             const spans = textLayerDiv.querySelectorAll('span');
             spans.forEach(span => {
-              const text = (span.textContent || '').toLowerCase();
-              if (text.includes(q)) {
+              const spanText = normalizeSearchText(span.textContent || '');
+              const isMatch = spanText.includes(normQ) || (queryWords.length > 1 && queryWords.every(w => spanText.includes(w)));
+              if (isMatch) {
                 span.style.backgroundColor = 'rgba(251, 191, 36, 0.45)';
-                span.style.boxShadow = '0 0 0 2px rgba(245, 158, 11, 0.7)';
+                span.style.boxShadow = '0 0 0 2px rgba(245, 158, 11, 0.85)';
                 span.style.borderRadius = '3px';
               }
             });
@@ -340,7 +380,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
     }
   };
 
-  // Search in PDF across all pages (Jump to words feature)
+  // Very Smart Search in PDF across all pages (Jump to words feature)
   const searchInPdf = useCallback(async (query: string) => {
     if (!pdfDoc || !query || query.trim().length < 2) {
       setMatches([]);
@@ -351,31 +391,55 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
 
     const currentSearchId = ++searchAbortRef.current;
     setIsSearching(true);
-    const q = query.trim().toLowerCase();
+    const normQ = normalizeSearchText(query);
+    const queryWords = normQ.split(' ').filter(w => w.length > 1);
     const foundMatches: { page: number; snippet: string }[] = [];
 
     for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
       if (searchAbortRef.current !== currentSearchId) return;
 
-      let pageText = textCacheRef.current.get(pageNum);
-      if (pageText === undefined) {
+      let rawPageText = textCacheRef.current.get(pageNum);
+      if (rawPageText === undefined) {
         try {
           const page = await pdfDoc.getPage(pageNum);
           const tc = await page.getTextContent();
-          pageText = tc.items.map((it: any) => it.str).join(' ');
-          textCacheRef.current.set(pageNum, pageText);
+          rawPageText = tc.items.map((it: any) => it.str).join(' ');
+          textCacheRef.current.set(pageNum, rawPageText);
         } catch {
-          pageText = '';
+          rawPageText = '';
         }
       }
 
-      const idx = pageText.toLowerCase().indexOf(q);
-      if (idx !== -1) {
-        const start = Math.max(0, idx - 15);
-        const end = Math.min(pageText.length, idx + q.length + 25);
-        const snippet = (start > 0 ? '...' : '') + pageText.slice(start, end).trim() + (end < pageText.length ? '...' : '');
+      if (!rawPageText) continue;
+
+      const normPage = normalizeSearchText(rawPageText);
+
+      // 1. Direct normalized phrase match
+      const phraseIdx = normPage.indexOf(normQ);
+      if (phraseIdx !== -1) {
+        const start = Math.max(0, phraseIdx - 20);
+        const end = Math.min(rawPageText.length, phraseIdx + normQ.length + 35);
+        const snippet = (start > 0 ? '...' : '') + rawPageText.slice(start, end).trim() + (end < rawPageText.length ? '...' : '');
         foundMatches.push({ page: pageNum, snippet });
         setMatches([...foundMatches]);
+        continue;
+      }
+
+      // 2. Proximity search: if multiple words in query, check if all words occur on this page within close proximity
+      if (queryWords.length > 1) {
+        const allPresent = queryWords.every(w => normPage.includes(w));
+        if (allPresent) {
+          const firstWordIdx = normPage.indexOf(queryWords[0]);
+          const lastWordIdx = normPage.indexOf(queryWords[queryWords.length - 1]);
+          if (firstWordIdx !== -1 && Math.abs(lastWordIdx - firstWordIdx) < 280) {
+            const minIdx = Math.min(firstWordIdx, lastWordIdx);
+            const start = Math.max(0, minIdx - 20);
+            const end = Math.min(rawPageText.length, minIdx + 85);
+            const snippet = (start > 0 ? '...' : '') + rawPageText.slice(start, end).trim() + (end < rawPageText.length ? '...' : '');
+            foundMatches.push({ page: pageNum, snippet });
+            setMatches([...foundMatches]);
+          }
+        }
       }
     }
 
@@ -548,9 +612,9 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
 
   return (
     <div className="relative w-full h-full flex-1 flex flex-col bg-[#0b0e11] select-text overflow-hidden">
-      {/* Top MangaDex Header Overlay */}
+      {/* Top MangaDex Header Overlay - 100% Solid Dark Bar (No clear / translucent bleed) */}
       {showControls && (
-        <div className="absolute top-0 inset-x-0 z-30 flex items-center justify-between px-6 py-3 bg-[#0e1216]/95 backdrop-blur-md border-b border-white/5 animate-fade-in text-xs text-stone-300 select-none">
+        <div className="absolute top-0 inset-x-0 z-30 flex items-center justify-between px-6 py-3 bg-[#0c0f12] border-b border-neutral-800 animate-fade-in text-xs text-stone-300 select-none shadow-xl">
           <div className="flex items-center gap-3 min-w-0">
             <span className="font-medium text-neutral-100 truncate max-w-sm md:max-w-md">
               {title || 'Document'}
@@ -562,7 +626,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
 
           <div className="flex items-center gap-3">
             {/* Zoom Controls */}
-            <div className="flex items-center gap-1 bg-neutral-900/90 rounded-lg p-0.5 border border-neutral-800 text-[11px]">
+            <div className="flex items-center gap-1 bg-[#161a20] rounded-lg p-0.5 border border-neutral-800 text-[11px]">
               <button
                 onClick={() => setZoom(prev => Math.max(0.5, Number((prev - 0.15).toFixed(2))))}
                 className="p-1 hover:text-white text-stone-400 hover:bg-neutral-800 rounded transition-colors"
@@ -587,7 +651,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
             </div>
 
             {/* Fit mode selector */}
-            <div className="flex bg-neutral-900/90 rounded-lg p-0.5 border border-neutral-800 text-[11px]">
+            <div className="flex bg-[#161a20] rounded-lg p-0.5 border border-neutral-800 text-[11px]">
               <button
                 onClick={() => {
                   setFitMode('height');
@@ -617,7 +681,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
             {/* Reading Direction (LTR / RTL) */}
             <button
               onClick={() => setReadingDirection(readingDirection === 'ltr' ? 'rtl' : 'ltr')}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-neutral-800/80 hover:bg-neutral-700 text-stone-300 border border-neutral-700 text-[11px] transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#1c2128] hover:bg-[#252b34] text-stone-300 border border-neutral-700 text-[11px] transition-colors"
               title="Toggle reading direction (LTR for Western books / RTL for Manga)"
             >
               <ArrowLeftRight className="w-3 h-3 text-teal-400" />
@@ -639,7 +703,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
               className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] transition-colors ${
                 showFindBar
                   ? 'bg-amber-400 text-black font-semibold border-amber-400 shadow-md shadow-amber-400/25'
-                  : 'bg-neutral-800/80 hover:bg-neutral-700 text-stone-300 border-neutral-700'
+                  : 'bg-[#1c2128] hover:bg-[#252b34] text-stone-300 border-neutral-700'
               }`}
               title="Find words in document (Ctrl+F)"
             >
@@ -651,7 +715,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
             {onToggleFullscreen && (
               <button
                 onClick={onToggleFullscreen}
-                className="p-1.5 rounded-lg bg-neutral-800/80 hover:bg-neutral-700 text-stone-300 hover:text-white transition-colors border border-neutral-700"
+                className="p-1.5 rounded-lg bg-[#1c2128] hover:bg-[#252b34] text-stone-300 hover:text-white transition-colors border border-neutral-700"
                 title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
               >
                 {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
@@ -661,88 +725,132 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
         </div>
       )}
 
-      {/* Floating Find in Document Bar */}
+      {/* Floating Find in Document Bar - 100% Solid Opaque (No clear UI) */}
       {showFindBar && (
-        <div className="absolute top-14 right-6 z-40 flex items-center gap-2 bg-[#14181e]/98 backdrop-blur-2xl border border-amber-500/40 rounded-xl shadow-2xl p-2 px-3 animate-fade-in text-xs text-neutral-100">
-          <Search className="w-4 h-4 text-amber-400 shrink-0" />
-          <input
-            ref={searchInputRef}
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                if (e.shiftKey) {
-                  goToPrevMatch();
-                } else {
-                  goToNextMatch();
+        <div className="absolute top-14 right-6 z-40 flex flex-col gap-2 bg-[#14181e] border border-amber-500/60 rounded-xl shadow-2xl p-2.5 animate-fade-in text-xs text-neutral-100">
+          <div className="flex items-center gap-2">
+            <Search className="w-4 h-4 text-amber-400 shrink-0" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (e.shiftKey) {
+                    goToPrevMatch();
+                  } else {
+                    goToNextMatch();
+                  }
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setShowFindBar(false);
                 }
-              } else if (e.key === 'Escape') {
-                e.preventDefault();
-                setShowFindBar(false);
-              }
-            }}
-            placeholder="Find words in document..."
-            className="w-40 md:w-56 bg-neutral-900 border border-neutral-700/80 rounded-lg px-2.5 py-1 text-xs text-neutral-100 placeholder:text-stone-500 focus:outline-none focus:ring-1 focus:ring-amber-400 font-medium"
-          />
-          {/* Jump Button */}
-          <button
-            onClick={() => {
-              if (matches.length > 0) {
-                goToNextMatch();
-              } else if (searchQuery.trim().length >= 2) {
-                searchInPdf(searchQuery);
-              }
-            }}
-            className="px-2.5 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-black text-xs font-semibold transition-colors shrink-0 shadow-sm"
-            title="Jump to word"
-          >
-            Jump
-          </button>
-          <div className="text-[11px] font-mono text-stone-400 px-1 min-w-[65px] text-center">
-            {isSearching ? (
-              <span className="text-amber-400 animate-pulse">Searching...</span>
-            ) : matches.length > 0 ? (
-              <span>
-                <strong className="text-amber-300">{currentMatchIndex + 1}</strong> of {matches.length}
-                <span className="text-[10px] text-stone-500 ml-1">(p.{matches[currentMatchIndex]?.page})</span>
-              </span>
-            ) : searchQuery.trim().length >= 2 ? (
-              <span className="text-rose-400">No matches</span>
-            ) : null}
-          </div>
-          <div className="flex items-center gap-1 border-l border-neutral-800 pl-1.5">
-            <button
-              onClick={goToPrevMatch}
-              disabled={matches.length === 0}
-              className="flex items-center gap-1 px-2 py-1 rounded bg-neutral-850 hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors text-[11px] font-medium border border-neutral-750"
-              title="Previous occurrence"
-            >
-              <ChevronUp className="w-3.5 h-3.5" />
-              <span>Prev</span>
-            </button>
-            <button
-              onClick={goToNextMatch}
-              disabled={matches.length === 0}
-              className="flex items-center gap-1 px-2 py-1 rounded bg-neutral-850 hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors text-[11px] font-medium border border-neutral-750"
-              title="Next occurrence"
-            >
-              <ChevronDown className="w-3.5 h-3.5" />
-              <span>Next</span>
-            </button>
+              }}
+              placeholder="Smart search words, phrases..."
+              className="w-44 md:w-60 bg-neutral-900 border border-neutral-700/80 rounded-lg px-2.5 py-1.5 text-xs text-neutral-100 placeholder:text-stone-500 focus:outline-none focus:ring-1 focus:ring-amber-400 font-medium"
+            />
+            {/* Jump Button */}
             <button
               onClick={() => {
-                setShowFindBar(false);
-                setSearchQuery('');
-                setMatches([]);
+                if (matches.length > 0) {
+                  goToNextMatch();
+                } else if (searchQuery.trim().length >= 2) {
+                  searchInPdf(searchQuery);
+                }
               }}
-              className="p-1.5 rounded hover:bg-neutral-800 text-stone-400 hover:text-white transition-colors ml-0.5"
-              title="Close find (Esc)"
+              className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-black text-xs font-semibold transition-colors shrink-0 shadow-sm"
+              title="Jump to next occurrence"
             >
-              <X className="w-4 h-4" />
+              Jump
             </button>
+            <div className="text-[11px] font-mono text-stone-300 px-1 min-w-[70px] text-center">
+              {isSearching ? (
+                <span className="text-amber-400 animate-pulse">Searching...</span>
+              ) : matches.length > 0 ? (
+                <span>
+                  <strong className="text-amber-300">{currentMatchIndex + 1}</strong> of {matches.length}
+                  <span className="text-[10px] text-stone-400 ml-1">(p.{matches[currentMatchIndex]?.page})</span>
+                </span>
+              ) : searchQuery.trim().length >= 2 ? (
+                <span className="text-rose-400">No matches</span>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-1 border-l border-neutral-800 pl-1.5">
+              <button
+                onClick={goToPrevMatch}
+                disabled={matches.length === 0}
+                className="flex items-center gap-1 px-2 py-1 rounded bg-[#1c2128] hover:bg-[#252b34] disabled:opacity-30 text-stone-300 hover:text-white transition-colors text-[11px] font-medium border border-neutral-700"
+                title="Previous occurrence"
+              >
+                <ChevronUp className="w-3.5 h-3.5" />
+                <span>Prev</span>
+              </button>
+              <button
+                onClick={goToNextMatch}
+                disabled={matches.length === 0}
+                className="flex items-center gap-1 px-2 py-1 rounded bg-[#1c2128] hover:bg-[#252b34] disabled:opacity-30 text-stone-300 hover:text-white transition-colors text-[11px] font-medium border border-neutral-700"
+                title="Next occurrence"
+              >
+                <ChevronDown className="w-3.5 h-3.5" />
+                <span>Next</span>
+              </button>
+              {matches.length > 0 && (
+                <button
+                  onClick={() => setShowMatchesDropdown(prev => !prev)}
+                  className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium border transition-colors ${
+                    showMatchesDropdown 
+                      ? 'bg-amber-400 text-black border-amber-400 font-semibold' 
+                      : 'bg-[#1c2128] hover:bg-[#252b34] text-stone-300 border-neutral-700'
+                  }`}
+                  title="List all match occurrences with snippets"
+                >
+                  <List className="w-3.5 h-3.5" />
+                  <span>List</span>
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setShowFindBar(false);
+                  setShowMatchesDropdown(false);
+                  setSearchQuery('');
+                  setMatches([]);
+                }}
+                className="p-1.5 rounded hover:bg-neutral-800 text-stone-400 hover:text-white transition-colors ml-0.5"
+                title="Close find (Esc)"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
+
+          {/* All Matches Dropdown Drawer - 100% Solid Opaque */}
+          {showMatchesDropdown && matches.length > 0 && (
+            <div className="w-full max-h-64 bg-[#101317] border border-neutral-700 rounded-xl p-2 overflow-y-auto space-y-1 z-50 shadow-2xl">
+              <div className="flex items-center justify-between pb-1.5 px-2 border-b border-neutral-800 text-[10px] text-stone-400 font-semibold uppercase tracking-wider">
+                <span>All {matches.length} matches found</span>
+                <span>Click to jump</span>
+              </div>
+              {matches.map((m, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => {
+                    setCurrentMatchIndex(idx);
+                    goToPage(m.page);
+                  }}
+                  className={`w-full text-left p-2 rounded-lg text-xs transition-colors flex flex-col gap-0.5 ${
+                    currentMatchIndex === idx
+                      ? 'bg-amber-500/20 text-amber-200 border border-amber-500/40'
+                      : 'hover:bg-[#1a1f26] text-stone-300 hover:text-white'
+                  }`}
+                >
+                  <span className="font-mono text-[10px] text-amber-400 font-semibold">Page {m.page}</span>
+                  <span className="line-clamp-2 text-[11px] text-stone-300">{m.snippet}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -765,6 +873,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
           </div>
         ) : (
           <div
+            ref={pageWrapperRef}
             className="relative shadow-2xl rounded my-auto mx-auto shrink-0 select-text"
             style={{
               width: canvasDimensions.width ? `${canvasDimensions.width}px` : 'auto',
@@ -784,7 +893,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
           </div>
         )}
 
-        {/* Left Explicit Arrow Button */}
+        {/* Left Explicit Arrow Button - 100% Solid Dark (Page text will not bleed through) */}
         <div className="absolute inset-y-0 left-0 w-20 flex items-center justify-start pl-3 pointer-events-none z-20 select-none">
           <button
             onClick={(e) => {
@@ -792,14 +901,14 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
               handlePrevPage();
             }}
             disabled={currentPage <= 1}
-            className="pointer-events-auto p-3 rounded-full bg-black/75 hover:bg-black/95 backdrop-blur-md border border-white/10 text-stone-200 hover:text-teal-400 shadow-2xl hover:scale-110 transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none"
+            className="pointer-events-auto p-3 rounded-full bg-[#161a20] hover:bg-[#222832] border border-neutral-700 text-stone-200 hover:text-teal-400 shadow-2xl hover:scale-110 transition-all opacity-80 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none"
             title="Previous page"
           >
             <ChevronLeft className="w-6 h-6" />
           </button>
         </div>
 
-        {/* Right Explicit Arrow Button */}
+        {/* Right Explicit Arrow Button - 100% Solid Dark (Page text will not bleed through) */}
         <div className="absolute inset-y-0 right-0 w-20 flex items-center justify-end pr-3 pointer-events-none z-20 select-none">
           <button
             onClick={(e) => {
@@ -807,7 +916,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
               handleNextPage();
             }}
             disabled={currentPage >= totalPages}
-            className="pointer-events-auto p-3 rounded-full bg-black/75 hover:bg-black/95 backdrop-blur-md border border-white/10 text-stone-200 hover:text-teal-400 shadow-2xl hover:scale-110 transition-all opacity-40 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none"
+            className="pointer-events-auto p-3 rounded-full bg-[#161a20] hover:bg-[#222832] border border-neutral-700 text-stone-200 hover:text-teal-400 shadow-2xl hover:scale-110 transition-all opacity-80 hover:opacity-100 disabled:opacity-0 disabled:pointer-events-none"
             title="Next page"
           >
             <ChevronRight className="w-6 h-6" />
@@ -815,15 +924,15 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
         </div>
       </div>
 
-      {/* MangaDex Bottom Scrubber Overlay */}
+      {/* MangaDex Bottom Scrubber Overlay - 100% Solid Dark Bar (No clear / translucent bleed) */}
       {showControls && (
-        <div className="absolute bottom-0 inset-x-0 z-30 flex flex-col gap-2 px-6 py-3 bg-[#0e1216]/95 backdrop-blur-md border-t border-white/5 animate-slide-up text-xs text-stone-300 select-none">
+        <div className="absolute bottom-0 inset-x-0 z-30 flex flex-col gap-2 px-6 py-3 bg-[#0c0f12] border-t border-neutral-800 animate-slide-up text-xs text-stone-300 select-none shadow-2xl">
           <div className="flex items-center justify-between gap-4">
             {/* Prev Button */}
             <button
               onClick={handlePrevPage}
               disabled={currentPage <= 1}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-900/90 hover:bg-neutral-800 disabled:opacity-40 text-stone-300 hover:text-white transition-colors border border-neutral-800"
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#161a20] hover:bg-[#222832] disabled:opacity-40 text-stone-300 hover:text-white transition-colors border border-neutral-800"
             >
               <ChevronLeft className="w-4 h-4" />
               <span>Prev</span>
@@ -851,7 +960,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
             <button
               onClick={handleNextPage}
               disabled={currentPage >= totalPages}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-neutral-900/90 hover:bg-neutral-800 disabled:opacity-40 text-stone-300 hover:text-white transition-colors border border-neutral-800"
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#161a20] hover:bg-[#222832] disabled:opacity-40 text-stone-300 hover:text-white transition-colors border border-neutral-800"
             >
               <span>Next</span>
               <ChevronRight className="w-4 h-4" />

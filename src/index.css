@@ -64,7 +64,7 @@
   top: 0;
   right: 0;
   bottom: 0;
-  overflow: clip;
+  overflow: hidden;
   opacity: 1;
   line-height: 1;
   text-size-adjust: none;
@@ -79,12 +79,11 @@
 .textLayer span,
 .textLayer span.markedContent {
   color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
   position: absolute !important;
   white-space: pre !important;
   cursor: text !important;
   transform-origin: 0% 0% !important;
-  line-height: 1 !important;
-  box-sizing: border-box !important;
 }
 
 .textLayer br {
@@ -99,12 +98,16 @@
 .textLayer *::selection,
 .textLayer span::selection {
   background: rgba(20, 184, 166, 0.45) !important;
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
 }
 
 .textLayer ::-moz-selection,
 .textLayer *::-moz-selection,
 .textLayer span::-moz-selection {
   background: rgba(20, 184, 166, 0.45) !important;
+  color: transparent !important;
+  -webkit-text-fill-color: transparent !important;
 }
 
 .textLayer br::selection {

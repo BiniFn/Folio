@@ -35,7 +35,7 @@ import { usePlayer, playerStore } from '../../stores/playerStore';
 import { absClient } from '../../api/absClient';
 import { parseEpub, ParsedEpub } from '../../services/epubParser';
 import { formatDuration, formatProgressPercent } from '../../utils/formatters';
-import { PdfPageReader } from './PdfPageReader';
+import { PdfPageReader, normalizeSearchText } from './PdfPageReader';
 
 export const EbookReader: React.FC = () => {
   const {
@@ -46,6 +46,7 @@ export const EbookReader: React.FC = () => {
     localBuffer,
     localBlobUrl,
     progress,
+    currentLocation,
     currentPage,
     totalPages,
     currentChapterTitle,
@@ -94,6 +95,7 @@ export const EbookReader: React.FC = () => {
   const [epubMatchIdx, setEpubMatchIdx] = useState(-1);
   const [isSearchingEpub, setIsSearchingEpub] = useState(false);
   const [justSavedProgress, setJustSavedProgress] = useState(false);
+  const [showEpubMatchesDropdown, setShowEpubMatchesDropdown] = useState(false);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -258,7 +260,7 @@ export const EbookReader: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, showFindBar]);
 
-  // Search in EPUB across all chapters
+  // Very Smart Search in EPUB across all chapters (handles quotes, accents, dashes, multi-word)
   const searchInEpub = useCallback((query: string) => {
     if (!parsedEpub || !query || query.trim().length < 2) {
       setEpubMatches([]);
@@ -268,28 +270,52 @@ export const EbookReader: React.FC = () => {
     }
 
     setIsSearchingEpub(true);
-    const q = query.trim().toLowerCase();
+    const normQ = normalizeSearchText(query);
+    const queryWords = normQ.split(' ').filter(w => w.length > 1);
     const found: Array<{ chapterIndex: number; chapterTitle: string; snippet: string }> = [];
 
     parsedEpub.chapters.forEach((chap, idx) => {
       // Strip HTML tags for clean text search
       const tempDiv = document.createElement('div');
       tempDiv.innerHTML = chap.html;
-      const text = tempDiv.textContent || tempDiv.innerText || '';
-      const textLower = text.toLowerCase();
+      const rawText = tempDiv.textContent || tempDiv.innerText || '';
+      if (!rawText) return;
 
+      const normText = normalizeSearchText(rawText);
+
+      // 1. Direct phrase search
       let pos = 0;
-      while ((pos = textLower.indexOf(q, pos)) !== -1) {
+      while ((pos = normText.indexOf(normQ, pos)) !== -1) {
         const start = Math.max(0, pos - 20);
-        const end = Math.min(text.length, pos + q.length + 30);
-        const snippet = (start > 0 ? '...' : '') + text.slice(start, end).trim() + (end < text.length ? '...' : '');
+        const end = Math.min(rawText.length, pos + normQ.length + 35);
+        const snippet = (start > 0 ? '...' : '') + rawText.slice(start, end).trim() + (end < rawText.length ? '...' : '');
         found.push({
           chapterIndex: idx,
           chapterTitle: chap.title || `Chapter ${idx + 1}`,
           snippet,
         });
-        pos += q.length;
-        if (found.length >= 100) break; // Limit to 100 matches for performance
+        pos += normQ.length;
+        if (found.length >= 100) break;
+      }
+
+      // 2. Proximity search if multi-word phrase was not found in this chapter
+      if (found.length < 100 && queryWords.length > 1 && !normText.includes(normQ)) {
+        const allPresent = queryWords.every(w => normText.includes(w));
+        if (allPresent) {
+          const firstIdx = normText.indexOf(queryWords[0]);
+          const lastIdx = normText.indexOf(queryWords[queryWords.length - 1]);
+          if (firstIdx !== -1 && Math.abs(lastIdx - firstIdx) < 280) {
+            const minIdx = Math.min(firstIdx, lastIdx);
+            const start = Math.max(0, minIdx - 20);
+            const end = Math.min(rawText.length, minIdx + 90);
+            const snippet = (start > 0 ? '...' : '') + rawText.slice(start, end).trim() + (end < rawText.length ? '...' : '');
+            found.push({
+              chapterIndex: idx,
+              chapterTitle: chap.title || `Chapter ${idx + 1}`,
+              snippet,
+            });
+          }
+        }
       }
     });
 
@@ -711,7 +737,7 @@ export const EbookReader: React.FC = () => {
 
       {/* FLYOUT 1: COLLAPSED AUDIO CONTROLS (Slides out from Left Toolbar) */}
       {showAudioFlyout && (
-        <div className="absolute left-16 top-12 z-50 w-84 bg-[#14181e]/98 backdrop-blur-2xl border border-teal-500/30 rounded-2xl shadow-2xl p-4 animate-fade-in text-xs text-neutral-100 flex flex-col gap-3.5">
+        <div className="absolute left-16 top-12 z-50 w-84 bg-[#14181e] border border-teal-500/40 rounded-2xl shadow-2xl p-4 animate-fade-in text-xs text-neutral-100 flex flex-col gap-3.5">
           {/* Header */}
           <div className="flex items-center justify-between pb-2 border-b border-neutral-800 text-stone-400">
             <div className="flex items-center gap-2">
@@ -832,7 +858,7 @@ export const EbookReader: React.FC = () => {
 
       {/* FLYOUT 2: CHAPTER & PAGE NAVIGATION (Type Chapter or Page #) */}
       {showChapterFlyout && (
-        <div className="absolute left-16 top-20 z-50 w-96 max-h-[85vh] bg-[#14181e]/98 backdrop-blur-2xl border border-[#232830] rounded-2xl shadow-2xl p-4 animate-fade-in text-xs text-neutral-100 flex flex-col gap-3">
+        <div className="absolute left-16 top-20 z-50 w-96 max-h-[85vh] bg-[#14181e] border border-neutral-700 rounded-2xl shadow-2xl p-4 animate-fade-in text-xs text-neutral-100 flex flex-col gap-3">
           {/* Header */}
           <div className="flex items-center justify-between pb-2 border-b border-neutral-800 text-stone-400">
             <div className="flex items-center gap-2">
@@ -1055,88 +1081,137 @@ export const EbookReader: React.FC = () => {
           ) : currentChapter?.html ? (
             /* EPUB Paginated Chapter View */
             <div className="relative flex-1 w-full h-full flex flex-col justify-between overflow-hidden select-text">
-              {/* EPUB Floating Find in Book Bar */}
+              {/* EPUB Floating Find in Book Bar - 100% Solid Opaque */}
               {showFindBar && (
-                <div className="absolute top-4 right-6 z-40 flex items-center gap-2 bg-[#14181e]/98 backdrop-blur-2xl border border-amber-500/40 rounded-xl shadow-2xl p-2 px-3 animate-fade-in text-xs text-neutral-100">
-                  <Search className="w-4 h-4 text-amber-400 shrink-0" />
-                  <input
-                    ref={epubSearchInputRef}
-                    type="text"
-                    value={epubSearchQuery}
-                    onChange={(e) => setEpubSearchQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        if (e.shiftKey) {
-                          goToPrevEpubMatch();
-                        } else {
-                          goToNextEpubMatch();
+                <div className="absolute top-4 right-6 z-40 flex flex-col gap-2 bg-[#14181e] border border-amber-500/60 rounded-xl shadow-2xl p-2.5 animate-fade-in text-xs text-neutral-100">
+                  <div className="flex items-center gap-2">
+                    <Search className="w-4 h-4 text-amber-400 shrink-0" />
+                    <input
+                      ref={epubSearchInputRef}
+                      type="text"
+                      value={epubSearchQuery}
+                      onChange={(e) => setEpubSearchQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          if (e.shiftKey) {
+                            goToPrevEpubMatch();
+                          } else {
+                            goToNextEpubMatch();
+                          }
+                        } else if (e.key === 'Escape') {
+                          e.preventDefault();
+                          setShowFindBar(false);
                         }
-                      } else if (e.key === 'Escape') {
-                        e.preventDefault();
-                        setShowFindBar(false);
-                      }
-                    }}
-                    placeholder="Find words in book..."
-                    className="w-40 md:w-56 bg-neutral-900 border border-neutral-700/80 rounded-lg px-2.5 py-1 text-xs text-neutral-100 placeholder:text-stone-500 focus:outline-none focus:ring-1 focus:ring-amber-400 font-medium"
-                  />
-                  {/* Jump Button */}
-                  <button
-                    onClick={() => {
-                      if (epubMatches.length > 0) {
-                        goToNextEpubMatch();
-                      } else if (epubSearchQuery.trim().length >= 2) {
-                        searchInEpub(epubSearchQuery);
-                      }
-                    }}
-                    className="px-2.5 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-black text-xs font-semibold transition-colors shrink-0 shadow-sm"
-                    title="Jump to word"
-                  >
-                    Jump
-                  </button>
-                  <div className="text-[11px] font-mono text-stone-400 px-1 min-w-[65px] text-center">
-                    {isSearchingEpub ? (
-                      <span className="text-amber-400 animate-pulse">Searching...</span>
-                    ) : epubMatches.length > 0 ? (
-                      <span>
-                        <strong className="text-amber-300">{epubMatchIdx + 1}</strong> of {epubMatches.length}
-                        <span className="text-[10px] text-stone-500 ml-1">({epubMatches[epubMatchIdx]?.chapterTitle})</span>
-                      </span>
-                    ) : epubSearchQuery.trim().length >= 2 ? (
-                      <span className="text-rose-400">No matches</span>
-                    ) : null}
-                  </div>
-                  <div className="flex items-center gap-1 border-l border-neutral-800 pl-1.5">
-                    <button
-                      onClick={goToPrevEpubMatch}
-                      disabled={epubMatches.length === 0}
-                      className="flex items-center gap-1 px-2 py-1 rounded bg-neutral-850 hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors text-[11px] font-medium border border-neutral-750"
-                      title="Previous occurrence"
-                    >
-                      <ChevronUp className="w-3.5 h-3.5" />
-                      <span>Prev</span>
-                    </button>
-                    <button
-                      onClick={goToNextEpubMatch}
-                      disabled={epubMatches.length === 0}
-                      className="flex items-center gap-1 px-2 py-1 rounded bg-neutral-850 hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors text-[11px] font-medium border border-neutral-750"
-                      title="Next occurrence"
-                    >
-                      <ChevronDown className="w-3.5 h-3.5" />
-                      <span>Next</span>
-                    </button>
+                      }}
+                      placeholder="Smart search words, phrases..."
+                      className="w-44 md:w-60 bg-neutral-900 border border-neutral-700/80 rounded-lg px-2.5 py-1.5 text-xs text-neutral-100 placeholder:text-stone-500 focus:outline-none focus:ring-1 focus:ring-amber-400 font-medium"
+                    />
+                    {/* Jump Button */}
                     <button
                       onClick={() => {
-                        setShowFindBar(false);
-                        setEpubSearchQuery('');
-                        setEpubMatches([]);
+                        if (epubMatches.length > 0) {
+                          goToNextEpubMatch();
+                        } else if (epubSearchQuery.trim().length >= 2) {
+                          searchInEpub(epubSearchQuery);
+                        }
                       }}
-                      className="p-1.5 rounded hover:bg-neutral-800 text-stone-400 hover:text-white transition-colors ml-0.5"
-                      title="Close find (Esc)"
+                      className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-black text-xs font-semibold transition-colors shrink-0 shadow-sm"
+                      title="Jump to next occurrence"
                     >
-                      <X className="w-4 h-4" />
+                      Jump
                     </button>
+                    <div className="text-[11px] font-mono text-stone-300 px-1 min-w-[70px] text-center">
+                      {isSearchingEpub ? (
+                        <span className="text-amber-400 animate-pulse">Searching...</span>
+                      ) : epubMatches.length > 0 ? (
+                        <span>
+                          <strong className="text-amber-300">{epubMatchIdx + 1}</strong> of {epubMatches.length}
+                          <span className="text-[10px] text-stone-400 ml-1">({epubMatches[epubMatchIdx]?.chapterTitle})</span>
+                        </span>
+                      ) : epubSearchQuery.trim().length >= 2 ? (
+                        <span className="text-rose-400">No matches</span>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-1 border-l border-neutral-800 pl-1.5">
+                      <button
+                        onClick={goToPrevEpubMatch}
+                        disabled={epubMatches.length === 0}
+                        className="flex items-center gap-1 px-2 py-1 rounded bg-[#1c2128] hover:bg-[#252b34] disabled:opacity-30 text-stone-300 hover:text-white transition-colors text-[11px] font-medium border border-neutral-700"
+                        title="Previous occurrence"
+                      >
+                        <ChevronUp className="w-3.5 h-3.5" />
+                        <span>Prev</span>
+                      </button>
+                      <button
+                        onClick={goToNextEpubMatch}
+                        disabled={epubMatches.length === 0}
+                        className="flex items-center gap-1 px-2 py-1 rounded bg-[#1c2128] hover:bg-[#252b34] disabled:opacity-30 text-stone-300 hover:text-white transition-colors text-[11px] font-medium border border-neutral-700"
+                        title="Next occurrence"
+                      >
+                        <ChevronDown className="w-3.5 h-3.5" />
+                        <span>Next</span>
+                      </button>
+                      {epubMatches.length > 0 && (
+                        <button
+                          onClick={() => setShowEpubMatchesDropdown(prev => !prev)}
+                          className={`flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium border transition-colors ${
+                            showEpubMatchesDropdown 
+                              ? 'bg-amber-400 text-black border-amber-400 font-semibold' 
+                              : 'bg-[#1c2128] hover:bg-[#252b34] text-stone-300 border-neutral-700'
+                          }`}
+                          title="List all match occurrences with snippets"
+                        >
+                          <List className="w-3.5 h-3.5" />
+                          <span>List</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          setShowFindBar(false);
+                          setShowEpubMatchesDropdown(false);
+                          setEpubSearchQuery('');
+                          setEpubMatches([]);
+                        }}
+                        className="p-1.5 rounded hover:bg-neutral-800 text-stone-400 hover:text-white transition-colors ml-0.5"
+                        title="Close find (Esc)"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
+
+                  {/* All EPUB Matches Dropdown Drawer - 100% Solid Opaque */}
+                  {showEpubMatchesDropdown && epubMatches.length > 0 && (
+                    <div className="w-full max-h-64 bg-[#101317] border border-neutral-700 rounded-xl p-2 overflow-y-auto space-y-1 z-50 shadow-2xl">
+                      <div className="flex items-center justify-between pb-1.5 px-2 border-b border-neutral-800 text-[10px] text-stone-400 font-semibold uppercase tracking-wider">
+                        <span>All {epubMatches.length} matches found</span>
+                        <span>Click to jump</span>
+                      </div>
+                      {epubMatches.map((m, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => {
+                            setEpubMatchIdx(idx);
+                            setActiveChapterIndex(m.chapterIndex);
+                            if (parsedEpub) {
+                              const newProgress = m.chapterIndex / parsedEpub.chapters.length;
+                              updateLocation(`chap_${m.chapterIndex}`, newProgress, undefined, undefined, m.chapterTitle);
+                            }
+                            contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          className={`w-full text-left p-2 rounded-lg text-xs transition-colors flex flex-col gap-0.5 ${
+                            epubMatchIdx === idx
+                              ? 'bg-amber-500/20 text-amber-200 border border-amber-500/40'
+                              : 'hover:bg-[#1a1f26] text-stone-300 hover:text-white'
+                          }`}
+                        >
+                          <span className="font-mono text-[10px] text-amber-400 font-semibold">{m.chapterTitle}</span>
+                          <span className="line-clamp-2 text-[11px] text-stone-300">{m.snippet}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               <div className="relative flex-1 w-full h-full overflow-y-auto px-6 md:px-14 py-8">
@@ -1151,8 +1226,8 @@ export const EbookReader: React.FC = () => {
                 />
               </div>
 
-              {/* Clean Bottom Navigation for EPUB */}
-              <div className="px-6 py-2.5 bg-[#14181e]/95 backdrop-blur-md border-t border-neutral-800/80 flex items-center justify-between gap-4 text-xs text-stone-300 shrink-0">
+              {/* Clean Bottom Navigation for EPUB - 100% Solid Dark Bar (No clear bleed) */}
+              <div className="px-6 py-2.5 bg-[#0c0f12] border-t border-neutral-800 flex items-center justify-between gap-4 text-xs text-stone-300 shrink-0 shadow-2xl">
                 <button
                   onClick={handlePrevChapter}
                   disabled={activeChapterIndex <= 0 && currentPage <= 1}
