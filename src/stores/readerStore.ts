@@ -54,6 +54,18 @@ export interface ReaderState {
 const PREF_STORAGE_KEY = 'abs_reader_preferences_v1';
 const LOCAL_BOOKS_STORAGE_KEY = 'folio_local_books_v1';
 
+export function cleanBookTitle(rawName: string): string {
+  if (!rawName) return '';
+  let cleaned = rawName
+    .replace(/\.(epub|pdf)$/i, '')
+    .replace(/\[[^\]]*\]/g, '') // remove bracket tags like [Seven Seas], [Kobo_LNWNCentral]
+    .replace(/\([^\)]*(?:digital|v\d+|c\d+|scan|official)[^\)]*\)/gi, '') // remove (Digital)
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || rawName;
+}
+
 export function getStoredLocalBooks(): LocalBookRecord[] {
   try {
     const raw = localStorage.getItem(LOCAL_BOOKS_STORAGE_KEY);
@@ -177,11 +189,28 @@ export const readerStore = {
       };
     }
 
-    const initialProgress = item.userMediaProgress?.ebookProgress || 0;
-    const initialLocation = item.userMediaProgress?.ebookLocation || '';
+    // Check for custom renamed title in localStorage
+    const savedCustomTitle = localStorage.getItem(`folio_custom_title_${item.id}`);
+    if (savedCustomTitle && item.media?.metadata) {
+      item.media.metadata.title = savedCustomTitle;
+    }
 
-    const estimatedTotal = 280;
-    const estimatedCurrent = Math.max(1, Math.round(initialProgress * estimatedTotal)) || 1;
+    // Check for saved progress in localStorage
+    let initialProgress = item.userMediaProgress?.ebookProgress || 0;
+    let initialLocation = item.userMediaProgress?.ebookLocation || '';
+    let estimatedTotal = 280;
+    let estimatedCurrent = Math.max(1, Math.round(initialProgress * estimatedTotal)) || 1;
+
+    try {
+      const savedRaw = localStorage.getItem(`folio_progress_${item.id}`);
+      if (savedRaw) {
+        const saved = JSON.parse(savedRaw);
+        if (saved.currentPage) estimatedCurrent = Number(saved.currentPage);
+        if (saved.totalPages) estimatedTotal = Number(saved.totalPages);
+        if (saved.progress) initialProgress = Number(saved.progress);
+        if (saved.location) initialLocation = saved.location;
+      }
+    } catch {}
 
     globalState = {
       ...globalState,
@@ -198,7 +227,7 @@ export const readerStore = {
       currentChapterTitle: 'Chapter 1',
       totalChapters: item.media?.chapters?.length || 12,
       remainingChapters: Math.max(0, (item.media?.chapters?.length || 12) - 1),
-      estimatedMinutesLeft: Math.round((1 - initialProgress) * 340),
+      estimatedMinutesLeft: Math.round((estimatedTotal - estimatedCurrent) * 1.4),
       showSidebar: true,
       showToc: false,
       showSettings: false,
@@ -216,6 +245,14 @@ export const readerStore = {
     let buffer: ArrayBuffer | null = null;
     let localBlobUrl: string | null = null;
 
+    // Check for custom renamed title first, otherwise clean title of ugly release tags
+    const savedCustomTitle = localStorage.getItem(`folio_custom_title_${file.name}`);
+    if (savedCustomTitle) {
+      title = savedCustomTitle;
+    } else {
+      title = cleanBookTitle(title);
+    }
+
     if (isPdf) {
       localBlobUrl = URL.createObjectURL(file);
       try {
@@ -232,7 +269,7 @@ export const readerStore = {
       try {
         const parsed = await parseEpub(buffer);
         if (parsed.title && parsed.title !== 'Untitled') {
-          title = parsed.title;
+          title = savedCustomTitle || parsed.title;
         }
         if (parsed.author && parsed.author !== 'Unknown Author') {
           author = parsed.author;
@@ -257,6 +294,29 @@ export const readerStore = {
         }
       }
     }
+
+    // Check saved progress in localStorage
+    let initialPage = 1;
+    let initialProgress = 0;
+    let initialTotalPages = isPdf ? 1 : 100;
+    let initialChapterTitle = isPdf ? 'Page 1' : 'Beginning';
+
+    try {
+      const savedRaw = localStorage.getItem(`folio_progress_${file.name}`);
+      if (savedRaw) {
+        const saved = JSON.parse(savedRaw);
+        if (saved.currentPage) initialPage = Number(saved.currentPage);
+        if (saved.totalPages) initialTotalPages = Number(saved.totalPages);
+        if (saved.progress) initialProgress = Number(saved.progress);
+        if (saved.chapterTitle) initialChapterTitle = saved.chapterTitle;
+      } else {
+        const stored = getStoredLocalBooks().find(b => b.fileName === file.name);
+        if (stored && stored.progress) {
+          initialProgress = stored.progress;
+          if (stored.currentLocation) initialPage = Number(stored.currentLocation) || 1;
+        }
+      }
+    } catch {}
 
     const localItem: LibraryItem = {
       id: `local_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -286,7 +346,8 @@ export const readerStore = {
       fileName: file.name,
       fileSize: file.size,
       lastOpened: Date.now(),
-      progress: 0,
+      progress: initialProgress,
+      currentLocation: String(initialPage),
       coverDataUrl: coverUrl,
     });
 
@@ -298,14 +359,14 @@ export const readerStore = {
       localFile: file,
       localBuffer: buffer,
       localBlobUrl: localBlobUrl,
-      currentLocation: '',
-      progress: 0,
-      currentPage: 1,
-      totalPages: isPdf ? 1 : 100,
-      currentChapterTitle: isPdf ? 'Page 1' : 'Beginning',
-      totalChapters: 12,
-      remainingChapters: 11,
-      estimatedMinutesLeft: 240,
+      currentLocation: String(initialPage),
+      progress: initialProgress,
+      currentPage: initialPage,
+      totalPages: initialTotalPages,
+      currentChapterTitle: initialChapterTitle,
+      totalChapters: Math.max(1, Math.round(initialTotalPages / 22)),
+      remainingChapters: Math.max(0, Math.round((1 - initialProgress) * 12)),
+      estimatedMinutesLeft: Math.round((initialTotalPages - initialPage) * 1.4),
       showSidebar: true,
       showToc: false,
       showSettings: false,
@@ -360,7 +421,90 @@ export const readerStore = {
     };
     notify();
 
+    // Persist progress to localStorage on EVERY page turn / update
+    try {
+      const progressRecord = {
+        currentPage: curPage,
+        totalPages: totPages,
+        progress: clampedProgress,
+        location,
+        chapterTitle: chapterTitle || globalState.currentChapterTitle,
+        updatedAt: Date.now(),
+      };
+
+      if (globalState.localFile?.name) {
+        localStorage.setItem(`folio_progress_${globalState.localFile.name}`, JSON.stringify(progressRecord));
+      }
+      if (globalState.item?.id) {
+        localStorage.setItem(`folio_progress_${globalState.item.id}`, JSON.stringify(progressRecord));
+      }
+
+      // Also update in stored local books if applicable
+      const books = getStoredLocalBooks();
+      let changed = false;
+      for (const b of books) {
+        if ((globalState.localFile && b.fileName === globalState.localFile.name) || (globalState.item && b.id === globalState.item.id)) {
+          b.progress = clampedProgress;
+          b.currentLocation = String(curPage);
+          b.lastOpened = Date.now();
+          changed = true;
+        }
+      }
+      if (changed) {
+        localStorage.setItem(LOCAL_BOOKS_STORAGE_KEY, JSON.stringify(books));
+      }
+    } catch (err) {
+      console.warn('Failed to persist progress to localStorage', err);
+    }
+
     readerStore.syncCurrentProgress(false);
+  },
+
+  renameBook(newTitle: string) {
+    const trimmed = newTitle.trim();
+    if (!trimmed || !globalState.item) return;
+
+    const keyName = globalState.localFile?.name;
+    const keyId = globalState.item.id;
+
+    if (keyName) {
+      localStorage.setItem(`folio_custom_title_${keyName}`, trimmed);
+    }
+    if (keyId) {
+      localStorage.setItem(`folio_custom_title_${keyId}`, trimmed);
+    }
+
+    // Update stored local book records if exists
+    try {
+      const books = getStoredLocalBooks();
+      let changed = false;
+      for (const b of books) {
+        if ((keyName && b.fileName === keyName) || (keyId && b.id === keyId)) {
+          b.title = trimmed;
+          changed = true;
+        }
+      }
+      if (changed) {
+        localStorage.setItem(LOCAL_BOOKS_STORAGE_KEY, JSON.stringify(books));
+      }
+    } catch (err) {
+      console.warn('Failed to update local book record title', err);
+    }
+
+    globalState = {
+      ...globalState,
+      item: {
+        ...globalState.item,
+        media: {
+          ...globalState.item.media,
+          metadata: {
+            ...globalState.item.media.metadata,
+            title: trimmed,
+          },
+        },
+      },
+    };
+    notify();
   },
 
   syncCurrentProgress(isImmediate: boolean = false) {
@@ -477,5 +621,6 @@ export function useReader() {
     toggleToc: readerStore.toggleToc,
     toggleSettings: readerStore.toggleSettings,
     setTableOfContents: readerStore.setTableOfContents,
+    renameBook: readerStore.renameBook,
   };
 }

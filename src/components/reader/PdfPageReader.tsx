@@ -6,7 +6,11 @@ import {
   Minimize2, 
   ZoomIn, 
   ZoomOut,
-  ArrowLeftRight
+  ArrowLeftRight,
+  Search,
+  ChevronUp,
+  ChevronDown,
+  X
 } from 'lucide-react';
 
 interface PdfPageReaderProps {
@@ -17,6 +21,8 @@ interface PdfPageReaderProps {
   onPageChange?: (page: number, total: number) => void;
   onToggleFullscreen?: () => void;
   isFullscreen?: boolean;
+  isFindOpen?: boolean;
+  onToggleFind?: () => void;
 }
 
 export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
@@ -27,6 +33,8 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
   onPageChange,
   onToggleFullscreen,
   isFullscreen = false,
+  isFindOpen,
+  onToggleFind,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -51,6 +59,25 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
   const [isPanning, setIsPanning] = useState<boolean>(false);
   const [readingDirection, setReadingDirection] = useState<'ltr' | 'rtl'>('ltr');
   const [showControls, setShowControls] = useState<boolean>(true);
+  const [showFindBar, setShowFindBar] = useState<boolean>(false);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [isSearching, setIsSearching] = useState<boolean>(false);
+  const [matches, setMatches] = useState<Array<{ page: number; snippet?: string }>>([]);
+  const [currentMatchIndex, setCurrentMatchIndex] = useState<number>(-1);
+
+  const textCacheRef = useRef<Map<number, string>>(new Map());
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchAbortRef = useRef<number>(0);
+
+  // Sync with prop if parent controls find bar
+  useEffect(() => {
+    if (isFindOpen !== undefined) {
+      setShowFindBar(isFindOpen);
+      if (isFindOpen) {
+        setTimeout(() => searchInputRef.current?.focus(), 60);
+      }
+    }
+  }, [isFindOpen]);
 
   // Synchronize when parent updates page (e.g. typing chapter or page jump)
   useEffect(() => {
@@ -212,12 +239,20 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
         textLayerDiv.innerHTML = '';
         textLayerDiv.style.width = `${w}px`;
         textLayerDiv.style.height = `${h}px`;
+        textLayerDiv.style.setProperty('--scale-factor', `${viewport.scale}`);
 
         try {
           const textContent = await page.getTextContent();
           const pdfjs = (window as any).pdfjsLib;
 
-          if (pdfjs?.renderTextLayer) {
+          if (pdfjs?.TextLayer) {
+            const tl = new pdfjs.TextLayer({
+              textContentSource: textContent,
+              container: textLayerDiv,
+              viewport: viewport,
+            });
+            await tl.render();
+          } else if (pdfjs?.renderTextLayer) {
             const textTask = pdfjs.renderTextLayer({
               textContentSource: textContent,
               textContent: textContent,
@@ -226,13 +261,20 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
               textDivs: [],
             });
             await (textTask.promise || textTask);
-          } else if (pdfjs?.TextLayer) {
-            const tl = new pdfjs.TextLayer({
-              textContentSource: textContent,
-              container: textLayerDiv,
-              viewport: viewport,
+          }
+
+          // Highlight searched words on current page if find is active
+          if (showFindBar && searchQuery && searchQuery.trim().length >= 2) {
+            const q = searchQuery.trim().toLowerCase();
+            const spans = textLayerDiv.querySelectorAll('span');
+            spans.forEach(span => {
+              const text = (span.textContent || '').toLowerCase();
+              if (text.includes(q)) {
+                span.style.backgroundColor = 'rgba(251, 191, 36, 0.45)';
+                span.style.boxShadow = '0 0 0 2px rgba(245, 158, 11, 0.7)';
+                span.style.borderRadius = '3px';
+              }
             });
-            await tl.render();
           }
         } catch (textErr) {
           console.warn('Text layer rendering note:', textErr);
@@ -255,7 +297,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
       }
       setIsRendering(false);
     }
-  }, [pdfDoc, currentPage, fitMode, zoom, showControls, totalPages]);
+  }, [pdfDoc, currentPage, fitMode, zoom, showControls, totalPages, showFindBar, searchQuery]);
 
   // Re-render when page, fitMode, zoom, or controls change
   useEffect(() => {
@@ -297,9 +339,112 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
     }
   };
 
-  // Keyboard Shortcuts (Arrow keys & space for page navigation, + / - for zoom)
+  // Search in PDF across all pages (Jump to words feature)
+  const searchInPdf = useCallback(async (query: string) => {
+    if (!pdfDoc || !query || query.trim().length < 2) {
+      setMatches([]);
+      setCurrentMatchIndex(-1);
+      setIsSearching(false);
+      return;
+    }
+
+    const currentSearchId = ++searchAbortRef.current;
+    setIsSearching(true);
+    const q = query.trim().toLowerCase();
+    const foundMatches: { page: number; snippet: string }[] = [];
+
+    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+      if (searchAbortRef.current !== currentSearchId) return;
+
+      let pageText = textCacheRef.current.get(pageNum);
+      if (pageText === undefined) {
+        try {
+          const page = await pdfDoc.getPage(pageNum);
+          const tc = await page.getTextContent();
+          pageText = tc.items.map((it: any) => it.str).join(' ');
+          textCacheRef.current.set(pageNum, pageText);
+        } catch {
+          pageText = '';
+        }
+      }
+
+      const idx = pageText.toLowerCase().indexOf(q);
+      if (idx !== -1) {
+        const start = Math.max(0, idx - 15);
+        const end = Math.min(pageText.length, idx + q.length + 25);
+        const snippet = (start > 0 ? '...' : '') + pageText.slice(start, end).trim() + (end < pageText.length ? '...' : '');
+        foundMatches.push({ page: pageNum, snippet });
+        setMatches([...foundMatches]);
+      }
+    }
+
+    if (searchAbortRef.current === currentSearchId) {
+      setMatches(foundMatches);
+      setIsSearching(false);
+      if (foundMatches.length > 0) {
+        // Pick first match on or after current page, or fallback to first match
+        const closestIdx = foundMatches.findIndex(m => m.page >= currentPage);
+        const targetIdx = closestIdx !== -1 ? closestIdx : 0;
+        setCurrentMatchIndex(targetIdx);
+        goToPage(foundMatches[targetIdx].page);
+      } else {
+        setCurrentMatchIndex(-1);
+      }
+    }
+  }, [pdfDoc, totalPages, currentPage]);
+
+  useEffect(() => {
+    if (!showFindBar) {
+      setMatches([]);
+      setCurrentMatchIndex(-1);
+      return;
+    }
+
+    if (!searchQuery || searchQuery.trim().length < 2) {
+      setMatches([]);
+      setCurrentMatchIndex(-1);
+      setIsSearching(false);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      searchInPdf(searchQuery);
+    }, 280);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery, showFindBar, searchInPdf]);
+
+  const goToNextMatch = () => {
+    if (matches.length === 0) return;
+    const nextIdx = (currentMatchIndex + 1) % matches.length;
+    setCurrentMatchIndex(nextIdx);
+    goToPage(matches[nextIdx].page);
+  };
+
+  const goToPrevMatch = () => {
+    if (matches.length === 0) return;
+    const prevIdx = (currentMatchIndex - 1 + matches.length) % matches.length;
+    setCurrentMatchIndex(prevIdx);
+    goToPage(matches[prevIdx].page);
+  };
+
+  // Keyboard Shortcuts (Arrow keys & space for page navigation, + / - for zoom, Ctrl+F for find)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Find shortcut Ctrl+F / Cmd+F works even when typing or in reading view
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setShowFindBar(true);
+        setTimeout(() => searchInputRef.current?.focus(), 60);
+        return;
+      }
+
+      if (e.key === 'Escape' && showFindBar) {
+        e.preventDefault();
+        setShowFindBar(false);
+        return;
+      }
+
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 
       if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
@@ -383,7 +528,8 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
 
   // Canvas click toggles controls, NEVER turns pages, ignores text selection
   const handleCanvasContainerClick = (e: React.MouseEvent) => {
-    // If text was selected by the user, do not toggle controls
+    // If user clicked inside textLayer or selected text, do not toggle controls
+    if ((e.target as HTMLElement)?.closest('.textLayer')) return;
     const selection = window.getSelection();
     if (selection && selection.toString().length > 0) return;
     if (isPanning) return;
@@ -477,6 +623,29 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
               <span>{readingDirection.toUpperCase()}</span>
             </button>
 
+            {/* Find in Document (Search Words) */}
+            <button
+              onClick={() => {
+                setShowFindBar(prev => {
+                  const next = !prev;
+                  if (next) {
+                    setTimeout(() => searchInputRef.current?.focus(), 60);
+                  }
+                  return next;
+                });
+                onToggleFind?.();
+              }}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] transition-colors ${
+                showFindBar
+                  ? 'bg-amber-400 text-black font-semibold border-amber-400 shadow-md shadow-amber-400/25'
+                  : 'bg-neutral-800/80 hover:bg-neutral-700 text-stone-300 border-neutral-700'
+              }`}
+              title="Find words in document (Ctrl+F)"
+            >
+              <Search className="w-3 h-3 text-amber-400" />
+              <span>Find</span>
+            </button>
+
             {/* Fullscreen Toggle */}
             {onToggleFullscreen && (
               <button
@@ -487,6 +656,75 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
                 {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Floating Find in Document Bar */}
+      {showFindBar && (
+        <div className="absolute top-14 right-6 z-40 flex items-center gap-2 bg-[#14181e]/98 backdrop-blur-2xl border border-amber-500/40 rounded-xl shadow-2xl p-2 px-3 animate-fade-in text-xs text-neutral-100">
+          <Search className="w-4 h-4 text-amber-400 shrink-0" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                if (e.shiftKey) {
+                  goToPrevMatch();
+                } else {
+                  goToNextMatch();
+                }
+              } else if (e.key === 'Escape') {
+                e.preventDefault();
+                setShowFindBar(false);
+              }
+            }}
+            placeholder="Find words in document..."
+            className="w-44 md:w-60 bg-neutral-900 border border-neutral-700/80 rounded-lg px-2.5 py-1 text-xs text-neutral-100 placeholder:text-stone-500 focus:outline-none focus:ring-1 focus:ring-amber-400 font-medium"
+          />
+          <div className="text-[11px] font-mono text-stone-400 px-1 min-w-[70px] text-center">
+            {isSearching ? (
+              <span className="text-amber-400 animate-pulse">Searching...</span>
+            ) : matches.length > 0 ? (
+              <span>
+                <strong className="text-amber-300">{currentMatchIndex + 1}</strong> of {matches.length}
+                <span className="text-[10px] text-stone-500 ml-1">(p.{matches[currentMatchIndex]?.page})</span>
+              </span>
+            ) : searchQuery.trim().length >= 2 ? (
+              <span className="text-rose-400">No matches</span>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-0.5 border-l border-neutral-800 pl-1.5">
+            <button
+              onClick={goToPrevMatch}
+              disabled={matches.length === 0}
+              className="p-1 rounded hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors"
+              title="Previous match (Shift+Enter)"
+            >
+              <ChevronUp className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={goToNextMatch}
+              disabled={matches.length === 0}
+              className="p-1 rounded hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors"
+              title="Next match (Enter)"
+            >
+              <ChevronDown className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => {
+                setShowFindBar(false);
+                setSearchQuery('');
+                setMatches([]);
+              }}
+              className="p-1 rounded hover:bg-neutral-800 text-stone-400 hover:text-white transition-colors ml-1"
+              title="Close find (Esc)"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
         </div>
       )}
@@ -518,7 +756,7 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
           >
             <canvas
               ref={canvasRef}
-              className="block rounded transition-opacity duration-150"
+              className="block rounded transition-opacity duration-150 pointer-events-none"
               style={{ opacity: isRendering ? 0.85 : 1 }}
             />
             {/* Transparent Selectable Text Overlay */}

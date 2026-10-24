@@ -1,10 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   ArrowLeft, 
   Moon, 
   Sun, 
   ChevronLeft, 
   ChevronRight, 
+  ChevronUp,
+  ChevronDown,
   Settings2, 
   List, 
   BookMarked,
@@ -23,7 +25,8 @@ import {
   RotateCcw,
   RotateCw,
   X,
-  Check
+  Check,
+  Edit3
 } from 'lucide-react';
 import { useReader } from '../../stores/readerStore';
 import { authStore } from '../../stores/authStore';
@@ -65,6 +68,7 @@ export const EbookReader: React.FC = () => {
     toggleToc,
     toggleSettings,
     setTableOfContents,
+    renameBook,
   } = useReader();
 
   const player = usePlayer();
@@ -81,10 +85,18 @@ export const EbookReader: React.FC = () => {
   const [jumpFeedback, setJumpFeedback] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [coverSrc, setCoverSrc] = useState<string>('');
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editTitleText, setEditTitleText] = useState('');
+  const [showFindBar, setShowFindBar] = useState(false);
+  const [epubSearchQuery, setEpubSearchQuery] = useState('');
+  const [epubMatches, setEpubMatches] = useState<Array<{ chapterIndex: number; chapterTitle: string; snippet: string }>>([]);
+  const [epubMatchIdx, setEpubMatchIdx] = useState(-1);
+  const [isSearchingEpub, setIsSearchingEpub] = useState(false);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const jumpInputRef = useRef<HTMLInputElement>(null);
+  const epubSearchInputRef = useRef<HTMLInputElement>(null);
 
   const isPdf = !!(
     ebookFile?.ext?.toLowerCase() === '.pdf' || 
@@ -212,6 +224,20 @@ export const EbookReader: React.FC = () => {
     if (!isOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        setShowFindBar(prev => !prev);
+        setShowChapterFlyout(false);
+        setShowAudioFlyout(false);
+        setTimeout(() => epubSearchInputRef.current?.focus(), 60);
+        return;
+      }
+      if (e.key === 'Escape' && showFindBar) {
+        e.preventDefault();
+        setShowFindBar(false);
+        return;
+      }
+
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.key === 'f' || e.key === 'F') {
         toggleFullscreen();
@@ -228,7 +254,101 @@ export const EbookReader: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen]);
+  }, [isOpen, showFindBar]);
+
+  // Search in EPUB across all chapters
+  const searchInEpub = useCallback((query: string) => {
+    if (!parsedEpub || !query || query.trim().length < 2) {
+      setEpubMatches([]);
+      setEpubMatchIdx(-1);
+      setIsSearchingEpub(false);
+      return;
+    }
+
+    setIsSearchingEpub(true);
+    const q = query.trim().toLowerCase();
+    const found: Array<{ chapterIndex: number; chapterTitle: string; snippet: string }> = [];
+
+    parsedEpub.chapters.forEach((chap, idx) => {
+      // Strip HTML tags for clean text search
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = chap.html;
+      const text = tempDiv.textContent || tempDiv.innerText || '';
+      const textLower = text.toLowerCase();
+
+      let pos = 0;
+      while ((pos = textLower.indexOf(q, pos)) !== -1) {
+        const start = Math.max(0, pos - 20);
+        const end = Math.min(text.length, pos + q.length + 30);
+        const snippet = (start > 0 ? '...' : '') + text.slice(start, end).trim() + (end < text.length ? '...' : '');
+        found.push({
+          chapterIndex: idx,
+          chapterTitle: chap.title || `Chapter ${idx + 1}`,
+          snippet,
+        });
+        pos += q.length;
+        if (found.length >= 100) break; // Limit to 100 matches for performance
+      }
+    });
+
+    setEpubMatches(found);
+    setIsSearchingEpub(false);
+    if (found.length > 0) {
+      // Pick first match on or after active chapter
+      const closestIdx = found.findIndex(m => m.chapterIndex >= activeChapterIndex);
+      const targetIdx = closestIdx !== -1 ? closestIdx : 0;
+      setEpubMatchIdx(targetIdx);
+      const match = found[targetIdx];
+      setActiveChapterIndex(match.chapterIndex);
+      const newProgress = match.chapterIndex / parsedEpub.chapters.length;
+      updateLocation(`chap_${match.chapterIndex}`, newProgress, undefined, undefined, match.chapterTitle);
+      contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      setEpubMatchIdx(-1);
+    }
+  }, [parsedEpub, activeChapterIndex, updateLocation]);
+
+  useEffect(() => {
+    if (!showFindBar) {
+      setEpubMatches([]);
+      setEpubMatchIdx(-1);
+      return;
+    }
+
+    if (!epubSearchQuery || epubSearchQuery.trim().length < 2) {
+      setEpubMatches([]);
+      setEpubMatchIdx(-1);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      searchInEpub(epubSearchQuery);
+    }, 280);
+
+    return () => clearTimeout(timer);
+  }, [epubSearchQuery, showFindBar, searchInEpub]);
+
+  const goToNextEpubMatch = () => {
+    if (epubMatches.length === 0 || !parsedEpub) return;
+    const nextIdx = (epubMatchIdx + 1) % epubMatches.length;
+    setEpubMatchIdx(nextIdx);
+    const match = epubMatches[nextIdx];
+    setActiveChapterIndex(match.chapterIndex);
+    const newProgress = match.chapterIndex / parsedEpub.chapters.length;
+    updateLocation(`chap_${match.chapterIndex}`, newProgress, undefined, undefined, match.chapterTitle);
+    contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const goToPrevEpubMatch = () => {
+    if (epubMatches.length === 0 || !parsedEpub) return;
+    const prevIdx = (epubMatchIdx - 1 + epubMatches.length) % epubMatches.length;
+    setEpubMatchIdx(prevIdx);
+    const match = epubMatches[prevIdx];
+    setActiveChapterIndex(match.chapterIndex);
+    const newProgress = match.chapterIndex / parsedEpub.chapters.length;
+    updateLocation(`chap_${match.chapterIndex}`, newProgress, undefined, undefined, match.chapterTitle);
+    contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   // Cover Resolution & Fallback to player artwork
   useEffect(() => {
@@ -523,6 +643,24 @@ export const EbookReader: React.FC = () => {
             title="Jump to chapter or page by typing (Press C)"
           >
             <BookMarked className="w-5 h-5" />
+          </button>
+
+          {/* FIND IN BOOK (Jump to words / search) */}
+          <button
+            onClick={() => {
+              setShowFindBar(!showFindBar);
+              setShowChapterFlyout(false);
+              setShowAudioFlyout(false);
+              setTimeout(() => epubSearchInputRef.current?.focus(), 60);
+            }}
+            className={`p-2 rounded-xl transition-all relative ${
+              showFindBar
+                ? 'bg-amber-400 text-black shadow-lg shadow-amber-400/30'
+                : 'hover:bg-neutral-800 text-stone-400 hover:text-stone-100'
+            }`}
+            title="Find words in book (Ctrl+F)"
+          >
+            <Search className="w-5 h-5" />
           </button>
 
           {/* Open Local Ebook Button */}
@@ -909,10 +1047,80 @@ export const EbookReader: React.FC = () => {
               }}
               onToggleFullscreen={toggleFullscreen}
               isFullscreen={isFullscreen}
+              isFindOpen={showFindBar}
+              onToggleFind={() => setShowFindBar(prev => !prev)}
             />
           ) : currentChapter?.html ? (
             /* EPUB Paginated Chapter View */
             <div className="relative flex-1 w-full h-full flex flex-col justify-between overflow-hidden select-text">
+              {/* EPUB Floating Find in Book Bar */}
+              {showFindBar && (
+                <div className="absolute top-4 right-6 z-40 flex items-center gap-2 bg-[#14181e]/98 backdrop-blur-2xl border border-amber-500/40 rounded-xl shadow-2xl p-2 px-3 animate-fade-in text-xs text-neutral-100">
+                  <Search className="w-4 h-4 text-amber-400 shrink-0" />
+                  <input
+                    ref={epubSearchInputRef}
+                    type="text"
+                    value={epubSearchQuery}
+                    onChange={(e) => setEpubSearchQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (e.shiftKey) {
+                          goToPrevEpubMatch();
+                        } else {
+                          goToNextEpubMatch();
+                        }
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        setShowFindBar(false);
+                      }
+                    }}
+                    placeholder="Find words in book..."
+                    className="w-44 md:w-60 bg-neutral-900 border border-neutral-700/80 rounded-lg px-2.5 py-1 text-xs text-neutral-100 placeholder:text-stone-500 focus:outline-none focus:ring-1 focus:ring-amber-400 font-medium"
+                  />
+                  <div className="text-[11px] font-mono text-stone-400 px-1 min-w-[70px] text-center">
+                    {isSearchingEpub ? (
+                      <span className="text-amber-400 animate-pulse">Searching...</span>
+                    ) : epubMatches.length > 0 ? (
+                      <span>
+                        <strong className="text-amber-300">{epubMatchIdx + 1}</strong> of {epubMatches.length}
+                        <span className="text-[10px] text-stone-500 ml-1">({epubMatches[epubMatchIdx]?.chapterTitle})</span>
+                      </span>
+                    ) : epubSearchQuery.trim().length >= 2 ? (
+                      <span className="text-rose-400">No matches</span>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center gap-0.5 border-l border-neutral-800 pl-1.5">
+                    <button
+                      onClick={goToPrevEpubMatch}
+                      disabled={epubMatches.length === 0}
+                      className="p-1 rounded hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors"
+                      title="Previous match (Shift+Enter)"
+                    >
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={goToNextEpubMatch}
+                      disabled={epubMatches.length === 0}
+                      className="p-1 rounded hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors"
+                      title="Next match (Enter)"
+                    >
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowFindBar(false);
+                        setEpubSearchQuery('');
+                        setEpubMatches([]);
+                      }}
+                      className="p-1 rounded hover:bg-neutral-800 text-stone-400 hover:text-white transition-colors ml-1"
+                      title="Close find (Esc)"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="relative flex-1 w-full h-full overflow-y-auto px-6 md:px-14 py-8">
                 <div
                   style={{
@@ -995,21 +1203,25 @@ export const EbookReader: React.FC = () => {
             )}
           </div>
 
-          {/* Book Cover Artwork */}
-          <div className="w-full aspect-square rounded-2xl overflow-hidden shadow-2xl bg-neutral-900 border border-neutral-800/80 mb-6 relative group">
+          {/* Book Cover Artwork - 100% Uncropped Display with Ambient Backdrop */}
+          <div className="relative w-full aspect-[2/3] max-h-[380px] rounded-2xl overflow-hidden shadow-2xl bg-neutral-950/90 border border-neutral-800/80 mb-6 group flex items-center justify-center mx-auto">
             {coverSrc ? (
-              <img
-                src={coverSrc}
-                alt={metadata.title}
-                onError={() => {
-                  if (coverSrc !== playerCover && playerCover) {
-                    setCoverSrc(playerCover);
-                  } else {
-                    setCoverSrc('');
-                  }
-                }}
-                className="w-full h-full object-cover object-center transition-transform duration-300 group-hover:scale-105"
-              />
+              <>
+                {/* Ambient Blurred Backdrop so there are no empty voids */}
+                <img
+                  src={coverSrc}
+                  alt=""
+                  aria-hidden="true"
+                  className="absolute inset-0 w-full h-full object-cover blur-2xl opacity-25 scale-110 pointer-events-none"
+                />
+                {/* 100% Full Uncropped Cover Image */}
+                <img
+                  src={coverSrc}
+                  alt={metadata.title}
+                  onError={() => setCoverSrc('')}
+                  className="relative z-10 max-w-full max-h-full object-contain rounded-xl shadow-lg transition-transform duration-300 group-hover:scale-[1.02]"
+                />
+              </>
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-gradient-to-b from-neutral-800 to-neutral-900 text-stone-300">
                 <BookOpen className="w-16 h-16 text-teal-400/70 mb-3" />
@@ -1019,12 +1231,75 @@ export const EbookReader: React.FC = () => {
             )}
           </div>
 
-          {/* Title & Volume Header */}
+          {/* Title & Volume Header with Inline Rename Support */}
           <div className="mb-4">
-            <h3 className="text-base font-medium text-neutral-100 line-clamp-2 leading-snug">
-              {metadata.title || localFile?.name || 'Local Ebook'}
-            </h3>
-            <p className="text-xs text-stone-400 mt-1">{metadata.authorName || 'Ebook Document'}</p>
+            {isEditingTitle ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (editTitleText.trim()) {
+                    renameBook(editTitleText.trim());
+                  }
+                  setIsEditingTitle(false);
+                }}
+                className="flex items-center gap-2"
+              >
+                <input
+                  type="text"
+                  value={editTitleText}
+                  onChange={(e) => setEditTitleText(e.target.value)}
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      setIsEditingTitle(false);
+                    }
+                  }}
+                  className="flex-1 bg-neutral-900 border border-teal-500/50 rounded-lg px-2.5 py-1 text-sm text-neutral-100 focus:outline-none focus:ring-1 focus:ring-teal-400 font-medium"
+                  placeholder="Enter novel title..."
+                />
+                <button
+                  type="submit"
+                  className="p-1.5 rounded-lg bg-teal-500 hover:bg-teal-400 text-black transition-colors"
+                  title="Save title"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsEditingTitle(false)}
+                  className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-stone-400 hover:text-white transition-colors"
+                  title="Cancel"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </form>
+            ) : (
+              <div className="group/title flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <h3
+                    className="text-base font-medium text-neutral-100 line-clamp-2 leading-snug cursor-pointer hover:text-teal-300 transition-colors"
+                    onClick={() => {
+                      setEditTitleText(metadata.title || localFile?.name || 'Local Ebook');
+                      setIsEditingTitle(true);
+                    }}
+                    title="Click to rename"
+                  >
+                    {metadata.title || localFile?.name || 'Local Ebook'}
+                  </h3>
+                  <p className="text-xs text-stone-400 mt-1">{metadata.authorName || 'Ebook Document'}</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setEditTitleText(metadata.title || localFile?.name || 'Local Ebook');
+                    setIsEditingTitle(true);
+                  }}
+                  className="p-1.5 rounded-lg text-stone-500 hover:text-teal-400 hover:bg-neutral-800/80 transition-colors opacity-60 group-hover/title:opacity-100 shrink-0"
+                  title="Rename novel"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Progress Percentage & Scrubber */}
