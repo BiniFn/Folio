@@ -207,13 +207,13 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
       const dpr = window.devicePixelRatio || 1;
       const viewport = page.getViewport({ scale: targetScale });
 
-      const w = Math.floor(viewport.width);
-      const h = Math.floor(viewport.height);
+      const w = viewport.width;
+      const h = viewport.height;
 
       setCanvasDimensions({ width: w, height: h });
 
-      canvas.width = Math.floor(viewport.width * dpr);
-      canvas.height = Math.floor(viewport.height * dpr);
+      canvas.width = Math.round(viewport.width * dpr);
+      canvas.height = Math.round(viewport.height * dpr);
       canvas.style.width = `${w}px`;
       canvas.style.height = `${h}px`;
 
@@ -245,22 +245,23 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
           const textContent = await page.getTextContent();
           const pdfjs = (window as any).pdfjsLib;
 
-          if (pdfjs?.TextLayer) {
-            const tl = new pdfjs.TextLayer({
-              textContentSource: textContent,
-              container: textLayerDiv,
-              viewport: viewport,
-            });
-            await tl.render();
-          } else if (pdfjs?.renderTextLayer) {
+          if (pdfjs?.renderTextLayer) {
             const textTask = pdfjs.renderTextLayer({
               textContentSource: textContent,
               textContent: textContent,
               container: textLayerDiv,
               viewport: viewport,
               textDivs: [],
+              enhanceTextSelection: true,
             });
             await (textTask.promise || textTask);
+          } else if (pdfjs?.TextLayer) {
+            const tl = new pdfjs.TextLayer({
+              textContentSource: textContent,
+              container: textLayerDiv,
+              viewport: viewport,
+            });
+            await tl.render();
           }
 
           // Highlight searched words on current page if find is active
@@ -683,9 +684,23 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
               }
             }}
             placeholder="Find words in document..."
-            className="w-44 md:w-60 bg-neutral-900 border border-neutral-700/80 rounded-lg px-2.5 py-1 text-xs text-neutral-100 placeholder:text-stone-500 focus:outline-none focus:ring-1 focus:ring-amber-400 font-medium"
+            className="w-40 md:w-56 bg-neutral-900 border border-neutral-700/80 rounded-lg px-2.5 py-1 text-xs text-neutral-100 placeholder:text-stone-500 focus:outline-none focus:ring-1 focus:ring-amber-400 font-medium"
           />
-          <div className="text-[11px] font-mono text-stone-400 px-1 min-w-[70px] text-center">
+          {/* Jump Button */}
+          <button
+            onClick={() => {
+              if (matches.length > 0) {
+                goToNextMatch();
+              } else if (searchQuery.trim().length >= 2) {
+                searchInPdf(searchQuery);
+              }
+            }}
+            className="px-2.5 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-black text-xs font-semibold transition-colors shrink-0 shadow-sm"
+            title="Jump to word"
+          >
+            Jump
+          </button>
+          <div className="text-[11px] font-mono text-stone-400 px-1 min-w-[65px] text-center">
             {isSearching ? (
               <span className="text-amber-400 animate-pulse">Searching...</span>
             ) : matches.length > 0 ? (
@@ -697,22 +712,24 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
               <span className="text-rose-400">No matches</span>
             ) : null}
           </div>
-          <div className="flex items-center gap-0.5 border-l border-neutral-800 pl-1.5">
+          <div className="flex items-center gap-1 border-l border-neutral-800 pl-1.5">
             <button
               onClick={goToPrevMatch}
               disabled={matches.length === 0}
-              className="p-1 rounded hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors"
-              title="Previous match (Shift+Enter)"
+              className="flex items-center gap-1 px-2 py-1 rounded bg-neutral-850 hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors text-[11px] font-medium border border-neutral-750"
+              title="Previous occurrence"
             >
               <ChevronUp className="w-3.5 h-3.5" />
+              <span>Prev</span>
             </button>
             <button
               onClick={goToNextMatch}
               disabled={matches.length === 0}
-              className="p-1 rounded hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors"
-              title="Next match (Enter)"
+              className="flex items-center gap-1 px-2 py-1 rounded bg-neutral-850 hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors text-[11px] font-medium border border-neutral-750"
+              title="Next occurrence"
             >
               <ChevronDown className="w-3.5 h-3.5" />
+              <span>Next</span>
             </button>
             <button
               onClick={() => {
@@ -720,10 +737,10 @@ export const PdfPageReader: React.FC<PdfPageReaderProps> = ({
                 setSearchQuery('');
                 setMatches([]);
               }}
-              className="p-1 rounded hover:bg-neutral-800 text-stone-400 hover:text-white transition-colors ml-1"
+              className="p-1.5 rounded hover:bg-neutral-800 text-stone-400 hover:text-white transition-colors ml-0.5"
               title="Close find (Esc)"
             >
-              <X className="w-3.5 h-3.5" />
+              <X className="w-4 h-4" />
             </button>
           </div>
         </div>

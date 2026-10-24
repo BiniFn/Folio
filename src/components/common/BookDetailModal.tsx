@@ -109,7 +109,7 @@ export const BookDetailModal: React.FC<BookDetailModalProps> = ({
                 src={coverUrl}
                 alt={metadata.title}
                 onError={() => setCoverError(true)}
-                className="w-full h-full object-cover"
+                className="w-full h-full object-contain"
               />
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center p-4 text-center bg-gradient-to-b from-stone-800 to-neutral-900 text-stone-300">

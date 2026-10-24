@@ -26,7 +26,8 @@ import {
   RotateCw,
   X,
   Check,
-  Edit3
+  Edit3,
+  Bookmark
 } from 'lucide-react';
 import { useReader } from '../../stores/readerStore';
 import { authStore } from '../../stores/authStore';
@@ -92,6 +93,7 @@ export const EbookReader: React.FC = () => {
   const [epubMatches, setEpubMatches] = useState<Array<{ chapterIndex: number; chapterTitle: string; snippet: string }>>([]);
   const [epubMatchIdx, setEpubMatchIdx] = useState(-1);
   const [isSearchingEpub, setIsSearchingEpub] = useState(false);
+  const [justSavedProgress, setJustSavedProgress] = useState(false);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1076,9 +1078,23 @@ export const EbookReader: React.FC = () => {
                       }
                     }}
                     placeholder="Find words in book..."
-                    className="w-44 md:w-60 bg-neutral-900 border border-neutral-700/80 rounded-lg px-2.5 py-1 text-xs text-neutral-100 placeholder:text-stone-500 focus:outline-none focus:ring-1 focus:ring-amber-400 font-medium"
+                    className="w-40 md:w-56 bg-neutral-900 border border-neutral-700/80 rounded-lg px-2.5 py-1 text-xs text-neutral-100 placeholder:text-stone-500 focus:outline-none focus:ring-1 focus:ring-amber-400 font-medium"
                   />
-                  <div className="text-[11px] font-mono text-stone-400 px-1 min-w-[70px] text-center">
+                  {/* Jump Button */}
+                  <button
+                    onClick={() => {
+                      if (epubMatches.length > 0) {
+                        goToNextEpubMatch();
+                      } else if (epubSearchQuery.trim().length >= 2) {
+                        searchInEpub(epubSearchQuery);
+                      }
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-amber-400 hover:bg-amber-300 text-black text-xs font-semibold transition-colors shrink-0 shadow-sm"
+                    title="Jump to word"
+                  >
+                    Jump
+                  </button>
+                  <div className="text-[11px] font-mono text-stone-400 px-1 min-w-[65px] text-center">
                     {isSearchingEpub ? (
                       <span className="text-amber-400 animate-pulse">Searching...</span>
                     ) : epubMatches.length > 0 ? (
@@ -1090,22 +1106,24 @@ export const EbookReader: React.FC = () => {
                       <span className="text-rose-400">No matches</span>
                     ) : null}
                   </div>
-                  <div className="flex items-center gap-0.5 border-l border-neutral-800 pl-1.5">
+                  <div className="flex items-center gap-1 border-l border-neutral-800 pl-1.5">
                     <button
                       onClick={goToPrevEpubMatch}
                       disabled={epubMatches.length === 0}
-                      className="p-1 rounded hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors"
-                      title="Previous match (Shift+Enter)"
+                      className="flex items-center gap-1 px-2 py-1 rounded bg-neutral-850 hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors text-[11px] font-medium border border-neutral-750"
+                      title="Previous occurrence"
                     >
                       <ChevronUp className="w-3.5 h-3.5" />
+                      <span>Prev</span>
                     </button>
                     <button
                       onClick={goToNextEpubMatch}
                       disabled={epubMatches.length === 0}
-                      className="p-1 rounded hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors"
-                      title="Next match (Enter)"
+                      className="flex items-center gap-1 px-2 py-1 rounded bg-neutral-850 hover:bg-neutral-800 disabled:opacity-30 text-stone-300 hover:text-white transition-colors text-[11px] font-medium border border-neutral-750"
+                      title="Next occurrence"
                     >
                       <ChevronDown className="w-3.5 h-3.5" />
+                      <span>Next</span>
                     </button>
                     <button
                       onClick={() => {
@@ -1113,10 +1131,10 @@ export const EbookReader: React.FC = () => {
                         setEpubSearchQuery('');
                         setEpubMatches([]);
                       }}
-                      className="p-1 rounded hover:bg-neutral-800 text-stone-400 hover:text-white transition-colors ml-1"
+                      className="p-1.5 rounded hover:bg-neutral-800 text-stone-400 hover:text-white transition-colors ml-0.5"
                       title="Close find (Esc)"
                     >
-                      <X className="w-3.5 h-3.5" />
+                      <X className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -1191,7 +1209,7 @@ export const EbookReader: React.FC = () => {
       {showSidebar && (
         <aside className="w-80 md:w-96 bg-[#13161a] border-l border-[#232830] p-6 md:p-8 flex flex-col justify-start shrink-0 overflow-y-auto z-20">
           {/* Header */}
-          <div className="flex items-center justify-between text-xs font-bold tracking-wider uppercase text-teal-400 mb-6">
+          <div className="flex items-center justify-between text-xs font-bold tracking-wider uppercase text-teal-400 mb-4">
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-teal-400" />
               <span>READING PROGRESS</span>
@@ -1203,27 +1221,34 @@ export const EbookReader: React.FC = () => {
             )}
           </div>
 
-          {/* Book Cover Artwork - 100% Uncropped Display with Ambient Backdrop */}
-          <div className="relative w-full aspect-[2/3] max-h-[380px] rounded-2xl overflow-hidden shadow-2xl bg-neutral-950/90 border border-neutral-800/80 mb-6 group flex items-center justify-center mx-auto">
+          {/* Jump to Word / Search Button */}
+          <button
+            onClick={() => {
+              setShowFindBar(true);
+              setTimeout(() => {
+                epubSearchInputRef.current?.focus();
+              }, 60);
+            }}
+            className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-semibold transition-all mb-4 active:scale-[0.98]"
+            title="Open Find / Jump to Words"
+          >
+            <Search className="w-3.5 h-3.5 text-amber-400" />
+            <span>Jump to Word</span>
+          </button>
+
+          {/* Book Cover Artwork - 100% Uncropped Natural Presentation */}
+          <div className="w-full flex items-center justify-center mb-6">
             {coverSrc ? (
-              <>
-                {/* Ambient Blurred Backdrop so there are no empty voids */}
-                <img
-                  src={coverSrc}
-                  alt=""
-                  aria-hidden="true"
-                  className="absolute inset-0 w-full h-full object-cover blur-2xl opacity-25 scale-110 pointer-events-none"
-                />
-                {/* 100% Full Uncropped Cover Image */}
+              <div className="relative rounded-2xl overflow-hidden shadow-2xl bg-neutral-950 border border-neutral-800/80 p-0.5 flex items-center justify-center group">
                 <img
                   src={coverSrc}
                   alt={metadata.title}
                   onError={() => setCoverSrc('')}
-                  className="relative z-10 max-w-full max-h-full object-contain rounded-xl shadow-lg transition-transform duration-300 group-hover:scale-[1.02]"
+                  className="w-auto h-auto max-w-full max-h-[360px] object-contain rounded-xl transition-transform duration-300 group-hover:scale-[1.02] block"
                 />
-              </>
+              </div>
             ) : (
-              <div className="w-full h-full flex flex-col items-center justify-center p-6 text-center bg-gradient-to-b from-neutral-800 to-neutral-900 text-stone-300">
+              <div className="w-48 h-64 rounded-2xl flex flex-col items-center justify-center p-6 text-center bg-gradient-to-b from-neutral-800 to-neutral-900 text-stone-300 border border-neutral-800 shadow-2xl">
                 <BookOpen className="w-16 h-16 text-teal-400/70 mb-3" />
                 <span className="font-serif font-bold text-base line-clamp-3">{metadata.title || localFile?.name || 'Local Ebook'}</span>
                 <span className="text-xs text-stone-400 mt-2">{metadata.authorName || 'Author'}</span>
@@ -1242,7 +1267,7 @@ export const EbookReader: React.FC = () => {
                   }
                   setIsEditingTitle(false);
                 }}
-                className="flex items-center gap-2"
+                className="flex flex-col gap-2 bg-neutral-900/90 p-2.5 rounded-xl border border-teal-500/40"
               >
                 <input
                   type="text"
@@ -1254,24 +1279,26 @@ export const EbookReader: React.FC = () => {
                       setIsEditingTitle(false);
                     }
                   }}
-                  className="flex-1 bg-neutral-900 border border-teal-500/50 rounded-lg px-2.5 py-1 text-sm text-neutral-100 focus:outline-none focus:ring-1 focus:ring-teal-400 font-medium"
+                  className="w-full bg-neutral-950 border border-neutral-700/80 rounded-lg px-2.5 py-1.5 text-sm text-neutral-100 focus:outline-none focus:ring-1 focus:ring-teal-400 font-medium"
                   placeholder="Enter novel title..."
                 />
-                <button
-                  type="submit"
-                  className="p-1.5 rounded-lg bg-teal-500 hover:bg-teal-400 text-black transition-colors"
-                  title="Save title"
-                >
-                  <Check className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsEditingTitle(false)}
-                  className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-stone-400 hover:text-white transition-colors"
-                  title="Cancel"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingTitle(false)}
+                    className="px-2.5 py-1 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-stone-400 hover:text-white text-xs font-medium transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-teal-500 hover:bg-teal-400 text-black text-xs font-semibold transition-colors shadow-md shadow-teal-500/20"
+                    title="Save novel name"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Save</span>
+                  </button>
+                </div>
               </form>
             ) : (
               <div className="group/title flex items-start justify-between gap-2">
@@ -1303,7 +1330,7 @@ export const EbookReader: React.FC = () => {
           </div>
 
           {/* Progress Percentage & Scrubber */}
-          <div className="flex flex-col gap-2 mb-3">
+          <div className="flex flex-col gap-2 mb-2">
             <div className="flex justify-between items-center text-xs">
               <span className="text-stone-400 font-mono">Page {currentPage} of {totalPages}</span>
               <span className="text-teal-400 font-bold font-mono">{formatProgressPercent(progress)}</span>
@@ -1315,6 +1342,48 @@ export const EbookReader: React.FC = () => {
               />
             </div>
           </div>
+
+          {/* Dedicated Save Progress Button */}
+          <button
+            onClick={() => {
+              if (item) {
+                const progressRecord = {
+                  currentPage,
+                  totalPages,
+                  progress,
+                  location: currentLocation || String(currentPage),
+                  chapterTitle: currentChapterTitle,
+                  updatedAt: Date.now(),
+                };
+                if (localFile?.name) {
+                  localStorage.setItem(`folio_progress_${localFile.name}`, JSON.stringify(progressRecord));
+                }
+                if (item.id) {
+                  localStorage.setItem(`folio_progress_${item.id}`, JSON.stringify(progressRecord));
+                }
+                setJustSavedProgress(true);
+                setTimeout(() => setJustSavedProgress(false), 2200);
+              }
+            }}
+            className={`w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl border text-xs font-medium transition-all active:scale-[0.98] ${
+              justSavedProgress 
+                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-md shadow-emerald-500/20' 
+                : 'bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 border-teal-500/30'
+            }`}
+            title="Save reading progress to local storage"
+          >
+            {justSavedProgress ? (
+              <>
+                <Check className="w-4 h-4 text-emerald-400" />
+                <span className="font-semibold text-emerald-300">Progress Saved!</span>
+              </>
+            ) : (
+              <>
+                <Bookmark className="w-4 h-4 text-teal-400" />
+                <span>Save Progress</span>
+              </>
+            )}
+          </button>
 
           {/* Estimated Stats - Live updating with each page turn */}
           <div className="mt-4 pt-4 border-t border-neutral-800/80 grid grid-cols-2 gap-4 text-xs">

@@ -52,7 +52,7 @@
   line-height: 1.3;
 }
 
-/* PDF.js Text Layer - Selectable Text */
+/* PDF.js Text Layer - Precise Selectable Text */
 :root {
   --scale-factor: 1;
 }
@@ -64,7 +64,7 @@
   top: 0;
   right: 0;
   bottom: 0;
-  overflow: hidden;
+  overflow: clip;
   opacity: 1;
   line-height: 1;
   text-size-adjust: none;
@@ -76,31 +76,35 @@
   cursor: text;
 }
 
-.textLayer :is(span, br),
 .textLayer span,
 .textLayer span.markedContent {
   color: transparent !important;
-  -webkit-text-fill-color: transparent !important;
-  position: absolute;
-  white-space: pre;
-  cursor: text;
-  transform-origin: 0% 0%;
+  position: absolute !important;
+  white-space: pre !important;
+  cursor: text !important;
+  transform-origin: 0% 0% !important;
+  line-height: 1 !important;
+  box-sizing: border-box !important;
+}
+
+.textLayer br {
+  position: static !important;
+  display: inline !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  pointer-events: none !important;
 }
 
 .textLayer ::selection,
 .textLayer *::selection,
 .textLayer span::selection {
-  background: rgba(20, 184, 166, 0.4) !important;
-  color: transparent !important;
-  -webkit-text-fill-color: transparent !important;
+  background: rgba(20, 184, 166, 0.45) !important;
 }
 
 .textLayer ::-moz-selection,
 .textLayer *::-moz-selection,
 .textLayer span::-moz-selection {
-  background: rgba(20, 184, 166, 0.4) !important;
-  color: transparent !important;
-  -webkit-text-fill-color: transparent !important;
+  background: rgba(20, 184, 166, 0.45) !important;
 }
 
 .textLayer br::selection {

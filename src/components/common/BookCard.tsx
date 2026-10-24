@@ -75,7 +75,7 @@ export const BookCard: React.FC<BookCardProps> = ({
             src={coverUrl}
             alt={metadata.title}
             loading="lazy"
-            className="w-full h-full object-cover object-center group-hover:scale-[1.02] transition-transform duration-300"
+            className="w-full h-full object-contain object-center group-hover:scale-[1.02] transition-transform duration-300"
             onError={(e) => {
               (e.target as HTMLElement).style.display = 'none';
             }}
